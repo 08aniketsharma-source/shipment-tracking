@@ -357,6 +357,11 @@ function confirmDelivery(trk,cont,inv){
   const label=inv||(trk||contNum||'Shipment');
   const today=new Date().toISOString().substring(0,10);
 
+  // Check if API already shows delivered or this is a manual mark
+  const ct=trk?(trk||'').replace(/[^a-zA-Z0-9]/g,'').toUpperCase():null;
+  const apiShowsDelivered=ct&&TRACKED_STS[ct]&&TRACKED_STS[ct].toLowerCase().includes('deliver');
+  const isManualMark=!apiShowsDelivered;
+
   // Build modal
   let existing=document.getElementById('deliveryConfirmModal');
   if(existing)existing.remove();
@@ -365,8 +370,8 @@ function confirmDelivery(trk,cont,inv){
   overlay.id='deliveryConfirmModal';
   overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:10000;display:flex;align-items:center;justify-content:center';
   overlay.innerHTML=`<div style="background:linear-gradient(180deg,#1e293b,#1a2332);border:1px solid #10b981;border-radius:16px;padding:28px;max-width:480px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.5)">
-    <h2 style="font-size:18px;color:#10b981;margin-bottom:6px">\u2705 Confirm Delivery Receipt</h2>
-    <p style="font-size:12px;color:#94a3b8;margin-bottom:16px">The courier API shows this shipment as <strong style="color:#10b981">Delivered</strong>. Please confirm you have received it.</p>
+    <h2 style="font-size:18px;color:#10b981;margin-bottom:6px">${isManualMark?'\u{1F4E6} Mark Container as Delivered':'\u2705 Confirm Delivery Receipt'}</h2>
+    <p style="font-size:12px;color:#94a3b8;margin-bottom:16px">${isManualMark?'Container tracking may still show <strong style="color:#f59e0b">In Transit</strong> until the vessel returns to origin. You can manually mark this shipment as delivered.':'The courier API shows this shipment as <strong style="color:#10b981">Delivered</strong>. Please confirm you have received it.'}</p>
     <div style="background:rgba(15,23,42,.6);border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:16px;font-size:12px">
       <div style="margin-bottom:6px"><span style="color:#94a3b8">Shipment:</span> <strong style="color:#f1f5f9">${label}</strong></div>
       ${trk?'<div style="margin-bottom:6px"><span style="color:#94a3b8">Tracking:</span> <span style="color:#22d3ee">'+trk+'</span></div>':''}
@@ -1921,6 +1926,9 @@ function renderTransitTable(tr){
       if(eventsShowDelivered&&!(trkSts&&trkSts.toLowerCase().includes('deliver'))){
         // Events show delivered but stored status doesn't — offer to mark as delivered
         html+=`<button class="btn btn-sm" style="font-size:9px;padding:3px 10px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(16,185,129,.3)" onclick="confirmDelivery('${trkEsc}','${contEsc}','${invEsc}')">\u2705 Confirm Delivery</button>`;
+      }else if(!eventsShowDelivered&&(isSea({mode:r.mode})||r.cont)){
+        // Container/sea shipment still showing in-transit — allow manual mark as delivered
+        html+=`<button class="btn btn-sm" style="font-size:9px;padding:3px 10px;background:linear-gradient(135deg,rgba(16,185,129,.2),rgba(5,150,105,.2));color:#10b981;border:1px solid rgba(16,185,129,.4);border-radius:6px;font-weight:700;cursor:pointer" onclick="confirmDelivery('${trkEsc}','${contEsc}','${invEsc}')" title="Container tracking may not update until vessel returns to origin">\u{1F4E6} Mark Delivered</button>`;
       }
       if(onCooldown){
         html+=`<span style="font-size:8px;color:var(--t2)">\u2705 Checked ${timeAgo(lastTrk)}</span>`;
@@ -1936,6 +1944,9 @@ function renderTransitTable(tr){
       if(eventsShowDelivered){
         html+=`<span style="font-size:9px;color:#10b981;font-weight:700">\u2705 Delivered</span>`;
         html+=`<button class="btn btn-sm" style="font-size:9px;padding:3px 10px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(16,185,129,.3)" onclick="confirmDelivery('${trkEsc}','${contEsc}','${invEsc}')">\u2705 Confirm Delivery</button>`;
+      }else if(isSea({mode:r.mode})||r.cont){
+        // Container/sea shipment without API delivery — allow manual mark as delivered
+        html+=`<button class="btn btn-sm" style="font-size:9px;padding:3px 10px;background:linear-gradient(135deg,rgba(16,185,129,.2),rgba(5,150,105,.2));color:#10b981;border:1px solid rgba(16,185,129,.4);border-radius:6px;font-weight:700;cursor:pointer" onclick="confirmDelivery('${trkEsc}','${contEsc}','${invEsc}')" title="Container tracking may not update until vessel returns to origin">\u{1F4E6} Mark Delivered</button>`;
       }
       if(r.trk){
         if(onCooldown){
