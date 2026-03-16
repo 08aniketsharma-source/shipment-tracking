@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Shipment Analytics Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f172a;--c1:#1e293b;--c2:#334155;--ac:#3b82f6;--gn:#10b981;--rd:#ef4444;--or:#f59e0b;--tx:#f1f5f9;--t2:#94a3b8;--bd:#475569;--pu:#8b5cf6;--cy:#06b6d4}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
+.hdr{background:linear-gradient(135deg,#1e293b 0%,#0f172a 50%,#1e1b4b 100%);padding:18px 28px;border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:100}
+.hdr-top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.hdr h1{font-size:22px;font-weight:700;background:linear-gradient(90deg,#60a5fa,#a78bfa,#f472b6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:2px}
+.hdr .sub{color:var(--t2);font-size:11px}
+.sync-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);padding:4px 12px;border-radius:16px;font-size:11px;color:var(--gn);font-weight:600}
+.sync-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.flt{background:var(--c1);border-bottom:1px solid rgba(71,85,105,.5);padding:10px 28px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+.flt select{background:var(--bg);color:var(--tx);border:1px solid var(--c2);padding:6px 10px;border-radius:6px;font-size:11px;cursor:pointer;transition:all .2s;outline:none}
+.flt select:focus{border-color:var(--ac);box-shadow:0 0 0 2px rgba(59,130,246,.15)}
+.flt label{color:var(--t2);font-size:9px;text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+.fg{display:flex;flex-direction:column;gap:2px}
+.btn{padding:7px 14px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s;display:inline-flex;align-items:center;gap:5px}
+.btn:hover{transform:translateY(-1px)}
+.btn-pri{background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;box-shadow:0 2px 8px rgba(59,130,246,.3)}
+.btn-out{background:transparent;border:1px solid var(--bd);color:var(--t2)}
+.btn-out:hover{border-color:var(--ac);color:var(--ac)}
+.btn-sm{padding:5px 10px;font-size:10px;border-radius:5px}
+.btn-or{background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff}
+.transit-toggle{opacity:.6;transition:all .2s}.transit-toggle.active{opacity:1;box-shadow:0 0 8px rgba(59,130,246,.3)}
+.transit-toggle:hover{opacity:1}
+.manual-save-row{background:rgba(249,115,22,.03)}
+.manual-save-row td{padding-top:4px!important;padding-bottom:4px!important}
+.inline-save{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.inline-save select,.inline-save input{padding:4px 8px;border-radius:6px;border:1px solid rgba(148,163,184,.3);background:var(--cd);color:var(--tx);font-size:11px;font-weight:600}
+.inline-save button{padding:4px 12px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:6px;font-weight:700;font-size:11px;cursor:pointer}
+.inline-save .save-msg{font-size:10px;font-weight:600}
+.qf{display:flex;gap:4px;align-items:center}
+.qf-btn{padding:5px 12px;border-radius:14px;border:1px solid var(--c2);background:transparent;color:var(--t2);cursor:pointer;font-size:10px;font-weight:600;transition:all .2s;white-space:nowrap}
+.qf-btn:hover{border-color:var(--ac);color:var(--ac)}
+.qf-btn.active{background:var(--ac);color:#fff;border-color:var(--ac)}
+.vq-toggle{display:flex;background:var(--bg);border:1px solid var(--c2);border-radius:6px;overflow:hidden}
+.vq-btn{padding:5px 12px;border:none;background:transparent;color:var(--t2);cursor:pointer;font-size:10px;font-weight:600;transition:all .2s}
+.vq-btn.active{background:var(--ac);color:#fff}
+.cur-sel{background:var(--bg);color:var(--tx);border:1px solid var(--c2);padding:4px 8px;border-radius:6px;font-size:10px;cursor:pointer;outline:none}
+.tabs{display:flex;gap:0;background:var(--c1);border-bottom:2px solid var(--c2);padding:0 28px;overflow-x:auto}
+.tab{padding:11px 18px;font-size:12px;font-weight:600;color:var(--t2);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s;white-space:nowrap;user-select:none}
+.tab:hover{color:var(--tx);background:rgba(59,130,246,.05)}
+.tab.active{color:var(--ac);border-bottom-color:var(--ac);background:rgba(59,130,246,.08)}
+.tab-body{display:none;padding:22px 28px;animation:fadeIn .3s ease}
+.tab-body.active{display:block}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
+.kpi{background:linear-gradient(135deg,var(--c1),rgba(30,41,59,.8));border:1px solid var(--c2);border-radius:10px;padding:16px 18px;transition:all .3s;position:relative;overflow:hidden}
+.kpi:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.3);border-color:var(--ac)}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:10px 10px 0 0}
+.kpi-blue::before{background:linear-gradient(90deg,#3b82f6,#60a5fa)}
+.kpi-green::before{background:linear-gradient(90deg,#10b981,#34d399)}
+.kpi-orange::before{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.kpi-red::before{background:linear-gradient(90deg,#ef4444,#f87171)}
+.kpi-purple::before{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}
+.kpi-cyan::before{background:linear-gradient(90deg,#06b6d4,#22d3ee)}
+.kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--t2);font-weight:600;margin-bottom:6px}
+.kpi-val{font-size:26px;font-weight:700;margin-bottom:3px}
+.kpi-blue .kpi-val{color:#60a5fa}.kpi-green .kpi-val{color:#34d399}.kpi-orange .kpi-val{color:#fbbf24}
+.kpi-red .kpi-val{color:#f87171}.kpi-purple .kpi-val{color:#a78bfa}.kpi-cyan .kpi-val{color:#22d3ee}
+.kpi-sub{font-size:10px;color:var(--t2)}
+.chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:18px;margin-bottom:20px}
+.chart-card{background:var(--c1);border:1px solid var(--c2);border-radius:10px;padding:18px;transition:border-color .2s}
+.chart-card:hover{border-color:var(--ac)}
+.chart-card h3{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--tx);display:flex;align-items:center;gap:6px}
+.chart-wrap{position:relative;height:260px}
+.alerts{margin-bottom:18px}
+.alert-item{background:linear-gradient(135deg,rgba(239,68,68,.08),rgba(239,68,68,.03));border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:10px 16px;margin-bottom:6px;display:flex;align-items:center;gap:8px;font-size:12px}
+.alert-item.warn{background:linear-gradient(135deg,rgba(245,158,11,.08),rgba(245,158,11,.03));border-color:rgba(245,158,11,.25)}
+.tbl-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--c2);background:var(--c1)}
+table{width:100%;border-collapse:collapse;font-size:11px}
+thead{position:sticky;top:0;z-index:5}
+th{background:linear-gradient(180deg,#334155,#2d3a4d);padding:9px 12px;text-align:left;font-weight:600;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;font-size:9px;cursor:pointer;white-space:nowrap;border-bottom:2px solid var(--bd)}
+td{padding:8px 12px;border-bottom:1px solid rgba(71,85,105,.3);white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis}
+tr:hover td{background:rgba(59,130,246,.04)}
+.sb{padding:3px 9px;border-radius:8px;font-size:9px;font-weight:600;white-space:nowrap}
+.sb-rcv{background:rgba(16,185,129,.12);color:#6ee7b7;border:1px solid rgba(16,185,129,.25)}
+.sb-trn{background:rgba(245,158,11,.12);color:#fcd34d;border:1px solid rgba(245,158,11,.25)}
+.sb-nam{background:rgba(139,92,246,.12);color:#c4b5fd;border:1px solid rgba(139,92,246,.25)}
+.sb-pak{background:rgba(107,114,128,.12);color:#d1d5db;border:1px solid rgba(107,114,128,.25)}
+.pag{display:flex;gap:5px;justify-content:center;align-items:center;padding:14px}
+.pag button{padding:5px 12px;border-radius:5px;border:1px solid var(--c2);background:var(--c1);color:var(--t2);cursor:pointer;font-size:11px;font-weight:600;transition:all .2s}
+.pag button.act{background:var(--ac);color:#fff;border-color:var(--ac)}
+.pag button:disabled{opacity:.3;cursor:not-allowed}
+.pag-info{color:var(--t2);font-size:11px;margin:0 8px}
+.trend-ctrl{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;padding:14px 18px;background:var(--c1);border:1px solid var(--c2);border-radius:10px}
+.trend-ctrl select{background:var(--bg);color:var(--tx);border:1px solid var(--c2);padding:7px 12px;border-radius:6px;font-size:12px;cursor:pointer;outline:none;min-width:160px}
+.trend-ctrl .fg label{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--t2);font-weight:600;margin-bottom:3px;display:block}
+.transit-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+.ts-card{background:var(--c1);border:1px solid var(--c2);border-radius:8px;padding:12px;text-align:center}
+.ts-card .num{font-size:24px;font-weight:700;margin-bottom:2px}
+.ts-card .lbl{font-size:10px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}
+.kanban{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px}
+.kanban-col{background:rgba(15,23,42,.5);border:1px solid var(--c2);border-radius:10px;display:flex;flex-direction:column;min-height:120px}
+.kanban-hdr{padding:10px 12px;border-radius:10px 10px 0 0;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:space-between}
+.kanban-hdr .cnt{background:rgba(0,0,0,.3);padding:2px 8px;border-radius:10px;font-size:10px}
+.kanban-body{padding:8px;flex:1;overflow-y:auto;max-height:400px;display:flex;flex-direction:column;gap:6px}
+.k-card{background:var(--c1);border:1px solid var(--c2);border-radius:6px;padding:8px 10px;font-size:10px;transition:all .2s}
+.k-card:hover{border-color:var(--ac);transform:translateY(-1px)}
+.k-card .k-inv{font-weight:700;color:var(--tx);margin-bottom:3px;font-size:11px}
+.k-card .k-meta{color:var(--t2);display:flex;justify-content:space-between;gap:4px;margin-top:2px}
+.k-card .k-days{font-weight:700}
+.k-badge{padding:2px 6px;border-radius:4px;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
+.kb-jp{background:rgba(59,130,246,.15);color:#60a5fa;border:1px solid rgba(59,130,246,.3)}
+.kb-lsp{background:rgba(139,92,246,.15);color:#a78bfa;border:1px solid rgba(139,92,246,.3)}
+.kb-smp{background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3)}
+.kb-ngp{background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3)}
+.kb-def{background:rgba(107,114,128,.15);color:#d1d5db;border:1px solid rgba(107,114,128,.3)}
+.trk-link{color:var(--ac);font-weight:600;text-decoration:none;padding:4px 12px;background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3);border-radius:6px;font-size:10px;white-space:nowrap;transition:all .2s}
+.trk-link:hover{background:rgba(59,130,246,.2)}
+.kanban-overdue .kanban-hdr{background:rgba(239,68,68,.15);color:#f87171}
+.kanban-today .kanban-hdr{background:rgba(6,182,212,.2);color:#22d3ee;font-weight:800}
+.kanban-thisweek .kanban-hdr{background:rgba(245,158,11,.15);color:#fbbf24}
+.kanban-nextweek .kanban-hdr{background:rgba(59,130,246,.15);color:#60a5fa}
+.kanban-later .kanban-hdr{background:rgba(16,185,129,.15);color:#34d399}
+.kanban-noeta .kanban-hdr{background:rgba(107,114,128,.15);color:#d1d5db}
+.srch{background:var(--bg);border:1px solid var(--bd);color:var(--tx);padding:8px 12px;border-radius:6px;font-size:12px;outline:none;width:280px;transition:border .2s}
+.srch:focus{border-color:var(--ac);box-shadow:0 0 0 2px rgba(59,130,246,.15)}
+.srch::placeholder{color:#64748b}
+.sec-title{font-size:15px;font-weight:700;margin-bottom:14px;color:var(--tx);display:flex;align-items:center;gap:7px}
+.sec-title .dot{width:7px;height:7px;border-radius:50%}
+.loading{position:fixed;top:0;left:0;right:0;bottom:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:14px}
+.spinner{width:36px;height:36px;border:3px solid var(--c2);border-top-color:var(--ac);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-txt{color:var(--t2);font-size:13px}
+.empty-state{text-align:center;padding:50px 20px;color:var(--t2)}
+.empty-state .icon{font-size:42px;margin-bottom:14px}
+.empty-state h3{font-size:16px;color:var(--tx);margin-bottom:6px}
+.empty-state p{font-size:12px;max-width:380px;margin:0 auto}
+.empty-state a{color:var(--ac);text-decoration:none}
+.planner-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:10px}
+.planner-card{background:var(--c1);border:1px solid var(--c2);border-radius:8px;padding:10px 12px;transition:all .3s;position:relative;overflow:hidden}
+.planner-card:hover{border-color:var(--ac);transform:translateY(-2px);box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.planner-now{border-color:#22d3ee !important;background:linear-gradient(135deg,rgba(6,182,212,.08),var(--c1));box-shadow:0 0 12px rgba(6,182,212,.15)}
+.planner-hdr{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+.planner-wk{font-size:11px;font-weight:700;color:var(--tx)}
+.planner-date{font-size:9px;color:var(--t2)}
+.planner-badge{font-size:8px;font-weight:800;color:#22d3ee;background:rgba(6,182,212,.15);padding:2px 7px;border-radius:8px;letter-spacing:.5px;display:inline-block;margin-bottom:2px}
+.planner-bar{height:4px;background:var(--c2);border-radius:4px;overflow:hidden;margin-bottom:8px}
+.planner-bar-fill{height:100%;width:var(--bar-pct);background:var(--bar-color);border-radius:4px;transition:width .5s}
+.planner-num{font-size:24px;font-weight:800;color:#fbbf24;line-height:1}
+.planner-sub{font-size:9px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.planner-metrics{display:flex;flex-direction:column;gap:2px;border-top:1px solid rgba(71,85,105,.3);padding-top:6px;margin-top:2px}
+.planner-m{display:flex;justify-content:space-between;align-items:baseline}
+.planner-m-val{font-size:13px;font-weight:700}
+.planner-m-lbl{font-size:8px;color:var(--t2);text-transform:uppercase;letter-spacing:.3px}
+.planner-progress{display:flex;align-items:baseline;gap:3px;font-size:16px;font-weight:800;color:#fbbf24;line-height:1;margin-bottom:2px}
+.planner-pct{font-size:11px;font-weight:700;margin-left:auto}
+.planner-foot{display:flex;justify-content:space-between;gap:4px;margin-top:4px;padding-top:4px;border-top:1px solid rgba(71,85,105,.2);font-size:8px;color:var(--t2)}
+.planner-totals{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:6px 0 0;padding:10px 14px;background:linear-gradient(135deg,rgba(59,130,246,.06),rgba(139,92,246,.06));border:1px solid var(--c2);border-radius:8px}
+.planner-t{text-align:center}
+.planner-t-val{display:block;font-size:22px;font-weight:800;line-height:1.2}
+.planner-t-lbl{font-size:9px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}
+.planner-month-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.planner-month-card{background:var(--c1);border:1px solid var(--c2);border-radius:8px;padding:12px 14px;transition:all .3s}
+.planner-month-card:hover{border-color:var(--pu);transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.planner-month-card.planner-now{border-color:#a78bfa;background:linear-gradient(135deg,rgba(139,92,246,.06),var(--c1));box-shadow:0 0 12px rgba(139,92,246,.12)}
+.planner-month-hdr{font-size:14px;font-weight:700;color:var(--tx);margin-bottom:4px}
+.planner-month-body{display:flex;flex-direction:column;gap:6px}
+.planner-month-big{margin:4px 0}
+.planner-month-row{display:flex;justify-content:space-between;font-size:11px;color:var(--t2)}
+.coll-sec{margin-bottom:10px}
+.coll-hdr{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;padding:8px 12px;background:linear-gradient(135deg,rgba(30,41,59,.9),rgba(15,23,42,.7));border:1px solid var(--c2);border-radius:8px;transition:all .2s;margin-bottom:0}
+.coll-hdr:hover{border-color:var(--ac);background:linear-gradient(135deg,rgba(59,130,246,.08),rgba(30,41,59,.9))}
+.coll-hdr .sec-title{margin-bottom:0;flex:1;font-size:13px}
+.coll-chev{font-size:12px;color:var(--t2);transition:transform .3s;flex-shrink:0}
+.coll-hdr.open .coll-chev{transform:rotate(180deg)}
+.coll-body{overflow:hidden;transition:max-height .4s ease,opacity .3s ease;max-height:0;opacity:0}
+.coll-body.open{max-height:none;opacity:1;margin-top:10px}
+.coll-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-left:auto;font-size:10px}
+.coll-summary .cs-item{display:flex;align-items:center;gap:3px;color:var(--t2)}
+.coll-summary .cs-val{font-weight:700;font-size:12px}
+.dp-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:999;opacity:0;pointer-events:none;transition:opacity .3s}
+.dp-overlay.open{opacity:1;pointer-events:auto}
+.detail-panel{position:fixed;top:0;right:-780px;width:750px;max-width:92vw;height:100vh;background:var(--bg);border-left:1px solid var(--c2);z-index:1000;transition:right .35s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;box-shadow:-10px 0 40px rgba(0,0,0,.6)}
+.detail-panel.open{right:0}
+.dp-header{display:flex;justify-content:space-between;align-items:center;padding:20px 28px;border-bottom:1px solid var(--c2);background:linear-gradient(135deg,var(--c1),rgba(30,41,59,.9));flex-shrink:0}
+.dp-header h2{font-size:18px;font-weight:700;color:var(--tx);margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;margin-right:16px}
+.dp-close{background:none;border:1px solid var(--c2);color:var(--t2);width:36px;height:36px;border-radius:8px;cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0}
+.dp-close:hover{border-color:var(--rd);color:var(--rd);background:rgba(239,68,68,.1)}
+.dp-body{flex:1;overflow-y:auto;padding:24px 28px}
+.dp-kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px}
+.dp-k{text-align:center;background:var(--c1);border:1px solid var(--c2);border-radius:10px;padding:14px 8px;transition:all .2s}
+.dp-k:hover{border-color:var(--ac);transform:translateY(-1px)}
+.dp-kv{display:block;font-size:22px;font-weight:800;line-height:1.2}
+.dp-kl{font-size:9px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+.dp-breakdown{background:var(--c1);border:1px solid var(--c2);border-radius:10px;padding:16px 20px;margin-bottom:18px}
+.dp-break-title{font-size:11px;font-weight:700;color:var(--ac);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid rgba(59,130,246,.15)}
+.dp-break-list{display:flex;flex-direction:column;gap:2px}
+.dp-break-row{display:flex;justify-content:space-between;font-size:12px;color:var(--t2);padding:6px 0;border-bottom:1px solid rgba(71,85,105,.15)}
+.dp-break-row:last-child{border-bottom:none}
+.dp-break-row span:first-child{color:var(--tx);font-weight:600}
+.dp-tbl-wrap{overflow-x:auto;margin-top:12px;border:1px solid var(--c2);border-radius:10px}
+.dp-tbl-wrap table{width:100%;font-size:11px;border-collapse:collapse}
+.dp-tbl-wrap th{position:sticky;top:0;background:var(--c1);padding:10px 8px;text-align:left;font-size:10px;color:var(--t2);text-transform:uppercase;letter-spacing:.3px;border-bottom:2px solid var(--c2)}
+.dp-tbl-wrap td{padding:8px;border-bottom:1px solid rgba(51,65,85,.2);color:var(--tx)}
+.dp-tbl-wrap tr:hover{background:rgba(59,130,246,.06)}
+.clickable{cursor:pointer !important;position:relative}
+.clickable:hover{border-color:var(--ac) !important;box-shadow:0 4px 16px rgba(59,130,246,.2) !important}
+.click-hint{font-size:8px;color:var(--t2);opacity:0;transition:opacity .2s;text-align:center;margin-top:2px}
+.clickable:hover .click-hint{opacity:1}
+.planner-card.clickable:active,.planner-month-card.clickable:active{transform:scale(.97)}
+.ts-card.clickable:hover,.kpi.clickable:hover{transform:translateY(-3px) !important;box-shadow:0 6px 20px rgba(0,0,0,.3) !important}
+.k-card.clickable:hover{border-color:var(--ac) !important;box-shadow:0 4px 14px rgba(59,130,246,.2) !important;transform:translateY(-1px)}
+.k-card.clickable:active{transform:scale(.97)}
+@media(max-width:1200px){.kanban{grid-template-columns:repeat(3,1fr)}.planner-grid{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:768px){.kpi-grid{grid-template-columns:repeat(2,1fr)}.chart-grid{grid-template-columns:1fr}.kanban{grid-template-columns:repeat(2,1fr)}.flt{padding:8px 14px}.tab-body{padding:14px}.tabs{padding:0 14px}.hdr{padding:14px}.planner-grid{grid-template-columns:repeat(2,1fr)}.planner-month-grid{grid-template-columns:1fr}.planner-totals{grid-template-columns:repeat(2,1fr)}.detail-panel{width:100%;max-width:100vw;right:-100vw}.dp-kpi{grid-template-columns:repeat(2,1fr)}.dp-body{padding:16px 14px}.dp-header{padding:14px 16px}.dp-header h2{font-size:15px}}
+</style>
+</head><body>
+<div class="loading" id="loader"><div class="spinner"></div><div class="loading-txt">Connecting to Firebase...</div></div>
+<div class="hdr"><div class="hdr-top">
+<div><h1>Shipment Analytics Dashboard</h1><div class="sub">Real-time insights &bull; Firebase sync &bull; Parcels API &bull; Container Intelligence</div></div>
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+<select class="cur-sel" id="curSel" onchange="setCurrency(this.value)" title="Currency"><option value="EUR">&#x20AC; EUR</option><option value="USD">$ USD</option></select>
+<a href="data_entry.html" class="nav-toggle" style="text-decoration:none;display:inline-flex;align-items:center;gap:8px;background:linear-gradient(135deg,rgba(251,146,60,.15),rgba(245,158,11,.15));border:1px solid rgba(251,146,60,.4);padding:7px 16px;border-radius:10px;font-size:12px;font-weight:700;color:#fb923c;transition:all .3s" onmouseover="this.style.background='linear-gradient(135deg,rgba(251,146,60,.25),rgba(245,158,11,.25))';this.style.transform='translateY(-1px)'" onmouseout="this.style.background='linear-gradient(135deg,rgba(251,146,60,.15),rgba(245,158,11,.15))';this.style.transform='none'">✏ Data Manager</a><span class="sync-badge"><span class="sync-dot"></span> Firebase Live</span>
+<span id="lastUpdated" style="font-size:10px;color:var(--t2);white-space:nowrap"></span>
+<button class="btn btn-out btn-sm" onclick="location.reload()">&#x21BB; Refresh</button>
+<a href="data_entry.html" class="btn btn-pri btn-sm" style="text-decoration:none">&#x270F; Data Entry</a>
+</div></div></div>
+<div class="flt">
+<div class="fg"><label>Financial Year</label><select id="fFY" onchange="af()"><option value="">All Years</option></select></div>
+<div class="fg"><label>Quarter</label><select id="fQtr" onchange="af()"><option value="">All Quarters</option></select></div>
+<div class="fg"><label>Month</label><select id="fMonth" onchange="QF=0;updQF();af()"><option value="">All Months</option></select></div>
+<div class="fg"><label>Category</label><select id="fCat" onchange="af()"><option value="">All Categories</option></select></div>
+<div class="fg"><label>Location</label><select id="fLoc" onchange="af()"><option value="">All Locations</option></select></div>
+<div class="fg"><label>Mode</label><select id="fMode" onchange="af()"><option value="">All Modes</option></select></div>
+<div class="fg"><label>Status</label><select id="fSts" onchange="af()"><option value="">All Statuses</option></select></div>
+<div class="fg"><label>Vendor</label><select id="fVnd" onchange="af()"><option value="">All Vendors</option></select></div>
+<div class="fg"><label>Container</label><select id="fCont" onchange="af()"><option value="">All Containers</option></select></div>
+<div class="fg"><label>Quick Filter</label><div class="qf" id="qfBar">
+<button class="qf-btn" onclick="setQF(1)">This Month</button>
+<button class="qf-btn" onclick="setQF(3)">3 Months</button>
+<button class="qf-btn" onclick="setQF(6)">6 Months</button>
+<button class="qf-btn" onclick="setQF(12)">12 Months</button>
+<button class="qf-btn active" onclick="setQF(0)">All Data</button>
+</div></div>
+<div class="fg"><label>Date Basis</label><div class="vq-toggle"><button class="dm-btn vq-btn active" data-dm="invoice" onclick="setDateMode('invoice')">&#x1F4C4; Invoice Date</button><button class="dm-btn vq-btn" data-dm="delivered" onclick="setDateMode('delivered')">&#x2705; Delivered Date</button></div></div>
+<div class="fg"><label>&nbsp;</label><button class="btn btn-out btn-sm" onclick="resetF()">&#x2715; Clear</button></div>
+</div>
+<div class="tabs">
+<div class="tab active" onclick="switchTab(0)">&#x1F6A2; In-Transit</div>
+<div class="tab" onclick="switchTab(1)">&#x2705; Delivered</div>
+<div class="tab" onclick="switchTab(2)">&#x26A0; Bottlenecks</div>
+<div class="tab" onclick="switchTab(3)">&#x1F4CA; Overall</div>
+<div class="tab" onclick="switchTab(4)">&#x1F4C8; Trends</div>
+<div class="tab" onclick="switchTab(5)">&#x1F4CB; All Shipments</div>
+</div>
+<div class="tab-body active" id="t0">
+<div class="sec-title"><span class="dot" style="background:var(--or)"></span> In-Transit Command Center</div>
+<div class="transit-strip" id="transitKpi"></div>
+<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+<button class="btn btn-or btn-sm" onclick="trackAll17('all')">&#x1F50D; Track All</button>
+<button class="btn btn-sm" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff" onclick="trackAll17('air')">&#x2708; Track Air Only</button>
+<button class="btn btn-sm" style="background:linear-gradient(135deg,#06b6d4,#0891b2);color:#fff" onclick="trackAll17('sea')">&#x1F6A2; Track Sea Only</button>
+<span style="color:var(--t2);font-size:9px;border-left:1px solid var(--bd);padding-left:8px">3h cooldown per shipment</span>
+<span id="trkStatus" style="font-size:11px;color:var(--t2);margin-left:auto"></span></div>
+<div id="etaTimeline" class="kanban"></div>
+<div id="delayedSection" style="margin:14px 0"></div>
+<div style="margin:18px 0" class="coll-sec">
+<div class="coll-hdr" onclick="toggleCollapse(this)" id="collPlanner"><div class="sec-title"><span class="dot" style="background:var(--cy)"></span> 12-Week &amp; 12-Month Capacity Planner</div><div class="coll-summary" id="plannerSummary"></div><span class="coll-chev">&#x25BC;</span></div>
+<div class="coll-body" id="plannerBody"><div class="tbl-wrap" style="margin-bottom:16px"><div id="weeklyPlan" style="padding:14px;font-size:12px"></div></div></div></div>
+<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
+<span style="font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.5px">View:</span>
+<button class="btn btn-sm transit-toggle active" id="tglAll" onclick="setTransitView('all')" style="font-size:11px">All Shipments</button>
+<button class="btn btn-sm transit-toggle" id="tglApi" onclick="setTransitView('api')" style="font-size:11px;background:linear-gradient(135deg,#22d3ee33,#06b6d433);border:1px solid #22d3ee55;color:#22d3ee">&#x1F4E1; API Tracked</button>
+<button class="btn btn-sm transit-toggle" id="tglManual" onclick="setTransitView('manual')" style="font-size:11px;background:linear-gradient(135deg,#f59e0b33,#d9770633);border:1px solid #f59e0b55;color:#f59e0b">&#x270F; Manual Update Needed</button>
+<span id="transitViewCount" style="font-size:10px;color:var(--t2);margin-left:auto"></span>
+</div>
+<div class="tbl-wrap" id="transitTblWrap"><table><thead><tr>
+<th>Invoice</th><th>Mode</th><th>Category</th><th>Container</th><th>Tracking</th><th>SKU/Qty</th><th>Value</th><th>Vendor</th><th>ETA</th><th>Days</th><th>Track / Update</th>
+</tr></thead><tbody id="transitTbody"></tbody></table></div>
+<div id="deliveredRef" style="display:none;margin-top:20px"><div class="sec-title" style="font-size:13px"><span class="dot" style="background:#10b981"></span> Recently Delivered (API Confirmed) <span id="deliveredRefCount" style="font-size:10px;color:var(--t2);margin-left:8px"></span></div>
+<div class="tbl-wrap"><table><thead><tr><th>Invoice</th><th>Mode</th><th>Tracking</th><th>Container</th><th>SKU/Qty</th><th>Value</th><th>Vendor</th><th style="min-width:160px">Delivery Status / Confirm</th></tr></thead><tbody id="deliveredRefTbody"></tbody></table></div></div>
+<div id="transitEmpty" class="empty-state" style="display:none"><div class="icon">&#x2705;</div><h3>No In-Transit Shipments</h3><p>All filtered shipments have been received.</p></div>
+</div>
+<div class="tab-body" id="t1">
+<div class="sec-title"><span class="dot" style="background:var(--gn)"></span> Delivered &amp; Completed Shipments</div>
+<div class="kpi-grid" id="dlvKpi"></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x1F4C5; Monthly Deliveries <label style="font-size:9px;color:var(--t2);cursor:pointer;margin-left:8px;font-weight:400"><input type="checkbox" id="dlvStackToggle" onchange="renderDelivered()" style="vertical-align:middle"> Stack JP/NJP</label></h3><div class="chart-wrap"><canvas id="chDlvMonth"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F30D; By Mode</h3><div class="chart-wrap"><canvas id="chDlvMode"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4E6; By Category</h3><div class="chart-wrap"><canvas id="chDlvCat"></canvas></div></div>
+<div class="chart-card"><h3>&#x23F1; Lead Time by Mode</h3><div class="chart-wrap"><canvas id="chDlvLT"></canvas></div></div>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 10px"><h3 style="font-size:13px;color:var(--tx)">&#x2705; Delivered Shipments</h3><span id="dlvCount" style="color:var(--t2);font-size:11px"></span></div>
+<div class="tbl-wrap"><table><thead><tr>
+<th>Date</th><th>Invoice</th><th>Mode</th><th>Category</th><th>Container</th><th>SKU/Qty</th><th>Value</th><th>Vendor</th><th>ETA</th><th>Actual</th><th>Lead Time</th><th>Status</th>
+</tr></thead><tbody id="dlvTbody"></tbody></table></div>
+</div>
+<div class="tab-body" id="t2">
+<div class="sec-title"><span class="dot" style="background:var(--rd)"></span> Bottlenecks &amp; Delay Intelligence</div>
+<div class="kpi-grid" id="delayKpi"></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x23F0; Avg Delay by Mode</h3><div class="chart-wrap"><canvas id="chDelayType"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4C9; Delay Distribution</h3><div class="chart-wrap"><canvas id="chDelayDist"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F3E2; Worst Vendors (Top 10)</h3><div class="chart-wrap"><canvas id="chDelayVnd"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4CD; By Location</h3><div class="chart-wrap"><canvas id="chDelayLoc"></canvas></div></div>
+</div>
+<div class="coll-sec"><div class="coll-hdr" onclick="toggleCollapse(this)"><div class="sec-title" style="margin:0"><span class="dot" style="background:var(--or)"></span> Delay Trend Analysis &mdash; Are We Improving?</div><span class="coll-chev">&#x25BC;</span></div>
+<div class="coll-body">
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x1F4C5; Monthly Delay Count &amp; Avg <span style="font-size:10px;color:var(--t2)">(KEY METRIC)</span></h3><div style="position:relative;height:280px"><canvas id="chDelayMonth"></canvas></div></div>
+<div class="chart-card"><h3>&#x2708;&#x1F6A2; Air vs Sea Delays</h3><div class="chart-wrap"><canvas id="chDelayAirSea"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4CA; Quarterly Trend</h3><div style="position:relative;height:280px"><canvas id="chDelayQtr"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4C8; MoM Improvement <span style="font-size:10px;color:var(--t2)">(green=better)</span></h3><div class="chart-wrap"><canvas id="chDelayMoM"></canvas></div></div>
+</div></div></div>
+<div class="coll-sec"><div class="coll-hdr" onclick="toggleCollapse(this)"><div class="sec-title" style="margin:0"><span class="dot" style="background:var(--rd)"></span> Commitment vs Reality (ETA Gap)</div><span class="coll-chev">&#x25BC;</span></div>
+<div class="coll-body">
+<p style="color:var(--t2);font-size:11px;margin-bottom:14px">Compares vendor-committed ETA with actual delivery &mdash; identifies reliability gaps by mode and vendor.</p>
+<div class="kpi-grid" id="gapKpi"></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x23F1; Committed vs Actual by Mode</h3><div class="chart-wrap"><canvas id="chGapMode"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4CA; Gap by Vendor (Top 10)</h3><div class="chart-wrap"><canvas id="chGapVnd"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4C5; Monthly Gap Trend</h3><div style="position:relative;height:280px"><canvas id="chGapMonth"></canvas></div></div>
+<div class="chart-card"><h3>&#x2705; On-Time Rate by Mode</h3><div class="chart-wrap"><canvas id="chGapOnTime"></canvas></div></div>
+</div>
+<h3 style="font-size:13px;margin:16px 0 10px;color:var(--tx)">&#x1F6A8; Most Delayed Shipments (Top 25)</h3>
+<div class="tbl-wrap"><table><thead><tr><th>Invoice</th><th>SKU</th><th>Mode</th><th>Container</th><th>Tracking</th><th>ETA</th><th>Actual</th><th>Delay</th><th>Vendor</th></tr></thead><tbody id="delayTbody"></tbody></table></div>
+</div></div>
+<div class="coll-sec" style="margin-top:28px"><div class="coll-hdr" onclick="toggleCollapse(this)"><div class="sec-title" style="margin:0"><span class="dot" style="background:var(--or)"></span> Flexible Delay Trends</div><span class="coll-chev">&#x25BC;</span></div>
+<div class="coll-body">
+<div class="trend-ctrl">
+<div class="fg"><label>Analyze By</label><select id="dlDim" onchange="renderDelayTrends()">
+<option value="jpnp">JP / Non-JP</option><option value="vnd">Supplier (Top 10)</option><option value="svc">Shipping Service</option>
+</select></div>
+<div class="fg"><label>Time</label><select id="dlTime" onchange="renderDelayTrends()">
+<option value="month">Monthly</option><option value="quarter">Quarterly</option><option value="year">Yearly</option>
+</select></div></div>
+<div class="chart-card" style="margin-bottom:16px"><h3 id="dlTrendTitle">&#x1F4CA; Delay Trends</h3><div style="position:relative;height:320px"><canvas id="chDelayTrend"></canvas></div></div>
+<div class="tbl-wrap"><table><thead id="dlTrendThead"></thead><tbody id="dlTrendTbody"></tbody></table></div>
+</div></div></div>
+<div class="tab-body" id="t3">
+<div class="sec-title"><span class="dot" style="background:var(--ac)"></span> Overall Portfolio Analytics</div>
+<div class="kpi-grid" id="overallKpi"></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x1F4C8; Monthly Overview <label style="font-size:9px;color:var(--t2);cursor:pointer;margin-left:8px;font-weight:400"><input type="checkbox" id="ovStackToggle" onchange="renderOverall()" style="vertical-align:middle"> Stack JP/NJP</label></h3><div class="chart-wrap"><canvas id="chOvMonth"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F30D; By Shipping Mode</h3><div class="chart-wrap"><canvas id="chOvMode"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4CD; By Location</h3><div class="chart-wrap"><canvas id="chOvLoc"></canvas></div></div>
+<div class="chart-card"><h3>&#x2705; Status Distribution</h3><div class="chart-wrap"><canvas id="chOvSts"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4E6; By Category</h3><div class="chart-wrap"><canvas id="chOvCat"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F464; By Agent</h3><div class="chart-wrap"><canvas id="chOvAgt"></canvas></div></div>
+</div>
+<div id="contSection" class="coll-sec" style="margin-top:20px">
+<div class="coll-hdr" onclick="toggleCollapse(this)"><div class="sec-title" style="margin:0"><span class="dot" style="background:var(--cy)"></span> Container Intelligence <span style="font-size:11px;color:var(--t2);font-weight:400">(Month-on-Month)</span></div>
+<select id="contJpFilter" onchange="event.stopPropagation();renderContainers()" style="margin-left:12px;background:var(--bg);color:var(--tx);border:1px solid var(--c2);padding:5px 10px;border-radius:6px;font-size:11px;cursor:pointer">
+<option value="all">All Categories</option><option value="jp">JP Only</option><option value="njp">NJP / LSP Only</option>
+</select><span class="coll-chev">&#x25BC;</span></div>
+<div class="coll-body">
+<div class="kpi-grid" id="contKpi"></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x1F4E6; Container Count &amp; Shipments (MoM)</h3><div class="chart-wrap"><canvas id="chContBar"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4B0; Container Value (MoM)</h3><div class="chart-wrap"><canvas id="chContVal"></canvas></div></div>
+</div>
+<h3 style="font-size:13px;margin:16px 0 10px;color:var(--tx)">&#x1F4E6; All Containers &mdash; Grouped Shipment Details</h3>
+<div class="tbl-wrap"><table><thead><tr>
+<th>Container</th><th>Shipments</th><th>Mode</th><th>Categories</th><th>Value</th><th>Qty</th><th>Vendors</th><th>ETA</th><th>Days</th><th>Status</th>
+</tr></thead><tbody id="contTbody"></tbody></table></div>
+</div></div>
+<div class="coll-sec" style="margin-top:24px"><div class="coll-hdr" onclick="toggleCollapse(this)"><div class="sec-title" style="margin:0"><span class="dot" style="background:var(--pu)"></span> JP vs LSP Comparison</div><span class="coll-chev">&#x25BC;</span></div>
+<div class="coll-body">
+<div class="kpi-grid" id="jpLspKpi"></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x1F4B0; Value</h3><div class="chart-wrap"><canvas id="chJpVal"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4E6; Quantity</h3><div class="chart-wrap"><canvas id="chJpQty"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4C5; Monthly Trend</h3><div class="chart-wrap"><canvas id="chJpTrend"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F3E2; Top Vendors</h3><div class="chart-wrap"><canvas id="chJpVnd"></canvas></div></div>
+</div>
+</div></div>
+</div>
+<div class="tab-body" id="t4">
+<div class="sec-title"><span class="dot" style="background:var(--cy)"></span> Trends &amp; Forecasting Engine</div>
+<div class="trend-ctrl">
+<div class="fg"><label>Analyze By</label><select id="trDim" onchange="renderTrends()">
+<option value="cat">Category</option><option value="loc">Location</option><option value="vnd">Vendor (Top 10)</option>
+<option value="mode">Shipping Mode</option><option value="fy">Financial Year</option><option value="fsts">Status</option><option value="agt">Agent</option><option value="cont">Container Count (JP vs NJP)</option>
+</select></div>
+<div class="fg"><label>Metric</label><select id="trMetric" onchange="renderTrends()">
+<option value="count">Shipment Count</option><option value="tval">Total Value</option>
+<option value="qty">Total Quantity</option><option value="avgval">Avg Value</option><option value="contcount">Container Count</option>
+</select></div>
+<div class="fg"><label>Time</label><select id="trTime" onchange="renderTrends()">
+<option value="month">Monthly</option><option value="quarter">Quarterly</option><option value="year">Yearly</option>
+</select></div>
+<div class="fg"><label>Chart</label><select id="trChart" onchange="renderTrends()">
+<option value="line">Line</option><option value="bar">Bar</option><option value="stackedbar">Stacked Bar</option>
+</select></div></div>
+<div class="chart-card" style="margin-bottom:20px"><h3 id="trendTitle">&#x1F4C8; Trend</h3><div style="position:relative;height:340px"><canvas id="chTrend"></canvas></div></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x1F4CA; Summary</h3><div class="chart-wrap"><canvas id="chTrendBar"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4B0; Share</h3><div class="chart-wrap"><canvas id="chTrendPie"></canvas></div></div>
+</div>
+<div class="tbl-wrap" style="margin-top:12px"><table><thead id="trendThead"></thead><tbody id="trendTbody"></tbody></table></div>
+<div class="coll-sec" style="margin-top:28px"><div class="coll-hdr" onclick="toggleCollapse(this)"><div class="sec-title" style="margin:0"><span class="dot" style="background:var(--cy)"></span> Lead Time &amp; Customs Analysis</div><span class="coll-chev">&#x25BC;</span></div>
+<div class="coll-body">
+<div class="kpi-grid" id="ltKpi"></div>
+<div class="chart-grid">
+<div class="chart-card"><h3>&#x1F4C5; Monthly Avg Lead Time</h3><div class="chart-wrap"><canvas id="chLTMonth"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F69A; By Shipping Mode</h3><div class="chart-wrap"><canvas id="chLTMode"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F4CA; Distribution</h3><div class="chart-wrap"><canvas id="chLTDist"></canvas></div></div>
+<div class="chart-card"><h3>&#x1F3E2; By Vendor (Top 10)</h3><div class="chart-wrap"><canvas id="chLTVendor"></canvas></div></div>
+</div>
+<div style="margin-top:24px"><div class="sec-title"><span class="dot" style="background:var(--or)"></span> Customs Processing</div></div>
+<div class="kpi-grid" id="customsKpi"></div>
+<div class="chart-grid"><div class="chart-card"><h3>&#x1F3DB; Monthly Customs Processing Time</h3><div class="chart-wrap"><canvas id="chCustoms"></canvas></div></div></div>
+<div id="customsEmpty" class="empty-state" style="display:none"><div class="icon">&#x1F3DB;</div><h3>No Customs Data Yet</h3><p>Add customs dates in <a href="data_entry.html">Data Entry</a> to track customs processing.</p></div>
+<h3 style="font-size:13px;margin:20px 0 10px;color:var(--tx)">&#x23F1; Longest Lead Times (Top 30)</h3>
+<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Invoice</th><th>Mode</th><th>Category</th><th>Container</th><th>Vendor</th><th>ETA</th><th>Arrival</th><th>Lead Time</th><th>Type</th></tr></thead><tbody id="ltTbody"></tbody></table></div>
+</div></div>
+</div>
+<div class="tab-body" id="t5">
+<div class="sec-title"><span class="dot" style="background:var(--ac)"></span> All Shipments</div>
+<div style="display:flex;gap:10px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+<input class="srch" id="tblSearch" placeholder="Search invoice, SKU, tracking, vendor, container..." oninput="renderTbl()">
+<span id="tblCount" style="color:var(--t2);font-size:11px"></span>
+<button class="btn btn-out btn-sm" onclick="exportCSV()" style="margin-left:auto">&#x1F4E5; Export CSV</button>
+</div>
+<div class="tbl-wrap"><table><thead><tr>
+<th onclick="sortTbl('dt')">Date</th><th onclick="sortTbl('inv')">Invoice</th><th onclick="sortTbl('loc')">Location</th>
+<th onclick="sortTbl('mode')">Mode</th><th onclick="sortTbl('cont')">Container</th><th onclick="sortTbl('trk')">Tracking</th><th onclick="sortTbl('sku')">SKU</th>
+<th onclick="sortTbl('qty')">Qty</th><th onclick="sortTbl('tval')">Value</th><th onclick="sortTbl('cat')">Category</th>
+<th onclick="sortTbl('fsts')">Status</th><th onclick="sortTbl('vnd')">Vendor</th><th onclick="sortTbl('eta')">ETA</th>
+</tr></thead><tbody id="mainTbody"></tbody></table></div>
+<div class="pag" id="mainPag"></div>
+</div>
+<div class="dp-overlay" id="dpOverlay" onclick="closeDetailPanel()"></div>
+<div class="detail-panel" id="detailPanel">
+<div class="dp-header"><h2 id="dpTitle"></h2><button class="dp-close" onclick="closeDetailPanel()">&#x2715;</button></div>
+<div class="dp-body" id="dpBody"></div>
+</div>
+<script src="dash_v3.js"></script>
+</body></html>
