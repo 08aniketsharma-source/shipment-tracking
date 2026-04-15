@@ -322,7 +322,7 @@ function loadTrackedETAs(){
     });
   }catch(e){}
 }
-function reExtractCachedETAs(){try{const cache=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');const updatedKeys=[];Object.keys(cache).forEach(k=>{const entry=cache[k];if(!entry||!entry.data)return;const newEta=extractETAFromTracking(entry.data);const newSts=extractStatusFromTracking(entry.data);let changed=false;if(newEta&&TRACKED_ETA[k]!==newEta){TRACKED_ETA[k]=newEta;TRACKED_TS[k]=Date.now();changed=true}if(newSts&&TRACKED_STS[k]!==newSts){TRACKED_STS[k]=newSts;changed=true}if(changed)updatedKeys.push(k)});if(updatedKeys.length>0){try{const d=JSON.parse(localStorage.getItem('TRACKED_ETAS')||'{}');updatedKeys.forEach(k=>{d[k]={eta:TRACKED_ETA[k]||null,sts:TRACKED_STS[k]||null,ts:TRACKED_TS[k]||Date.now()};try{const fbKey=k.replace(/[.#$/\[\]]/g,'_');fbDB.ref('tracking/'+fbKey).update({eta:TRACKED_ETA[k]||null,sts:TRACKED_STS[k]||null,ts:TRACKED_TS[k]||Date.now()})}catch(e){}});localStorage.setItem('TRACKED_ETAS',JSON.stringify(d))}catch(e){}};}catch(e){console.warn('reExtractCachedETAs error:',e)}}
+function reExtractCachedETAs(){try{const cache=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');const updatedKeys=[];Object.keys(cache).forEach(k=>{const entry=cache[k];if(!entry||!entry.data)return;const newEta=extractETAFromTracking(entry.data);const newSts=extractStatusFromTracking(entry.data);let changed=false;if(newEta&&isValidDateStr(newEta)&&TRACKED_ETA[k]!==newEta){TRACKED_ETA[k]=newEta;TRACKED_TS[k]=Date.now();changed=true}if(newSts&&TRACKED_STS[k]!==newSts){TRACKED_STS[k]=newSts;changed=true}if(changed)updatedKeys.push(k)});if(updatedKeys.length>0){try{const d=JSON.parse(localStorage.getItem('TRACKED_ETAS')||'{}');updatedKeys.forEach(k=>{d[k]={eta:TRACKED_ETA[k]||null,sts:TRACKED_STS[k]||null,ts:TRACKED_TS[k]||Date.now()};try{const fbKey=k.replace(/[.#$/\[\]]/g,'_');fbDB.ref('tracking/'+fbKey).update({eta:TRACKED_ETA[k]||null,sts:TRACKED_STS[k]||null,ts:TRACKED_TS[k]||Date.now()})}catch(e){}});localStorage.setItem('TRACKED_ETAS',JSON.stringify(d))}catch(e){}};}catch(e){console.warn('reExtractCachedETAs error:',e)}}
 // ============ COLLAPSIBLE SECTIONS ============
 function toggleCollapse(hdr){
   hdr.classList.toggle('open');
@@ -500,8 +500,9 @@ function extractETAFromTracking(info){
         const ddm=(deepMatch[1]).match(/(\d{4}-\d{2}-\d{2})/);
         if(ddm){console.log('extractETA: deep scan ISO=',ddm[1]);return ddm[1]}
       }
-      // 0c2. Broader scan: look for ANY field with "eta" or "arrival" in key name that has a date value
-      const broadMatch=infoStr.match(/"[^"]*(?:eta|ETA|arrival|deliver)[^"]*"\s*:\s*"(\d{4}-\d{2}-\d{2}[^"]*)"/i);
+      // 0c2. Broader scan: look for fields with "estimated" or "expected" + "delivery"/"arrival" in key name
+      // Narrowed to avoid matching past arrival event dates as ETAs
+      const broadMatch=infoStr.match(/"[^"]*(?:estimated|expected|scheduled|promised)[^"]*(?:delivery|arrival|eta)[^"]*"\s*:\s*"(\d{4}-\d{2}-\d{2}[^"]*)"/i);
       if(broadMatch){
         const bm=broadMatch[1].substring(0,10);
         const bd=new Date(bm);
@@ -532,16 +533,22 @@ function extractETAFromTracking(info){
         const lastState=info.states[0];
         if(lastState.date)return lastState.date.substring(0,10);
       }
-      // 2. Search events for ETA/arrival hints (NOT departure events)
-      // For containers, only use the MOST RECENT matching event (newest first)
+      // 2. Search events for FUTURE ETA hints only (NOT past arrival events)
+      // Only use events that explicitly mention "estimated" or "expected" — past arrivals are NOT ETAs
       if(info.states){
         for(const st of info.states){
           const desc=(st.status||'').toLowerCase();
-          // Only match arrival/estimate events, explicitly exclude departure and loading events
+          // Exclude departure, loading, and past arrival events
           if(desc.includes('depart')||desc.includes('loaded')||desc.includes('gate out')||desc.includes('gate-out'))continue;
-          if((desc.includes('estimat')||desc.includes('expect')||desc.includes('arrival')||desc.includes('arrived')||desc.includes('discharg'))&&st.date){
-            console.log('extractETA: using event "'+st.status+'" date=',st.date.substring(0,10));
-            return st.date.substring(0,10);
+          if(desc.includes('arrived')||desc.includes('discharg'))continue; // Past events, not ETAs
+          // Only match genuine ETA/estimate events
+          if((desc.includes('estimat')||desc.includes('expect'))&&st.date){
+            const evDate=new Date(st.date);
+            // Sanity check: ETA should be a future or very recent date, not an old event
+            if(!isNaN(evDate)&&evDate.getFullYear()>2020){
+              console.log('extractETA: using estimate event "'+st.status+'" date=',st.date.substring(0,10));
+              return st.date.substring(0,10);
+            }
           }
         }
       }
@@ -621,13 +628,20 @@ function extractStatusFromTracking(info){
   }catch(e){}return null;
 }
 function cleanTrk(t){return(t||'').replace(/\s+/g,'').trim()}
+function isValidDateStr(s){
+  if(!s||typeof s!=='string')return false;
+  const sl=s.toLowerCase().trim();
+  if(sl==='not available'||sl==='n/a'||sl==='-'||sl==='na'||sl==='none'||sl==='tbd'||sl==='tba'||sl==='pending')return false;
+  return/^\d{4}-\d{2}-\d{2}/.test(s);
+}
 function getEffectiveETA(r){
   const t=cleanTrk(r.trk);
   // Check by tracking/BL number first
-  if(t&&TRACKED_ETA[t])return TRACKED_ETA[t];
+  if(t&&TRACKED_ETA[t]&&isValidDateStr(TRACKED_ETA[t]))return TRACKED_ETA[t];
   // Also check by container number (for sea freight where trk is BL but tracking saved under container)
-  if(r.cont){const cn=extractContainerNum(r.cont);if(cn&&TRACKED_ETA[cn])return TRACKED_ETA[cn]}
-  return r.eta;
+  if(r.cont){const cn=extractContainerNum(r.cont);if(cn&&TRACKED_ETA[cn]&&isValidDateStr(TRACKED_ETA[cn]))return TRACKED_ETA[cn]}
+  // Only return r.eta if it's a valid date string (not "Not Available" etc.)
+  return isValidDateStr(r.eta)?r.eta:null;
 }
 function isTrackedETA(r){
   const t=cleanTrk(r.trk);
@@ -988,7 +1002,7 @@ function buildManualSavePanel(num,idx,mode,cont){
       '<select id="awbSts_'+idx+'" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(148,163,184,0.3);background:var(--cd);color:var(--tx);font-size:12px;font-weight:600">'+
         '<option value="">-- Status --</option>'+
         '<option value="Delivered">Delivered</option>'+
-        '<option value="In Transit" selected>In Transit</option>'+
+        '<option value="In Transit">In Transit</option>'+
         '<option value="Info Received">Info Received</option>'+
         '<option value="Out for Delivery">Out for Delivery</option>'+
         '<option value="Arrived at Port">Arrived at Port</option>'+
@@ -1003,6 +1017,60 @@ function buildManualSavePanel(num,idx,mode,cont){
       '<span id="awbSaveMsg_'+idx+'" style="font-size:11px;font-weight:600"></span>'+
     '</div>'+
   '</div>';
+}
+
+// Open carrier tracking popup from kanban card — side-by-side mode
+// Carrier page opens in a left-half popup window; ETA save form stays in the right-side panel
+function openCarrierPopup(idx){
+  const r=KANBAN_ITEMS[idx];if(!r)return;
+  const num=r.trk||r.cont||'';if(!num)return;
+  const mode=r.mode||'';const cont=r.cont||'';
+  const panel=document.getElementById('detailPanel'),overlay=document.getElementById('dpOverlay');
+  if(!panel)return;
+  document.getElementById('dpTitle').textContent='\uD83D\uDCCB Update ETA \u2014 '+(r.inv||num);
+  const icon=isSea(r)?'\uD83D\uDEA2':isAir(r)?'\u2708\uFE0F':'\uD83D\uDCE6';
+  const pIdx=10000+idx;
+  // 1. Shipment summary strip
+  let h='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px">';
+  h+='<div style="background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.2);border-radius:8px;padding:8px;text-align:center"><div style="font-size:9px;color:var(--t2)">Mode</div><div style="font-size:13px;font-weight:700;color:#60a5fa">'+icon+' '+(r.mode||'-')+'</div></div>';
+  h+='<div style="background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:8px;text-align:center"><div style="font-size:9px;color:var(--t2)">Value</div><div style="font-size:13px;font-weight:700;color:#34d399">'+fcFull(parseVal(r.tval))+'</div></div>';
+  h+='<div style="background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.2);border-radius:8px;padding:8px;text-align:center"><div style="font-size:9px;color:var(--t2)">Current ETA</div><div style="font-size:13px;font-weight:700;color:#fbbf24">'+(getEffectiveETA(r)||r.eta||'None')+'</div></div>';
+  h+='</div>';
+  // 2. Info banner with reopen button
+  h+='<div style="background:rgba(34,211,238,0.07);border:1px solid rgba(34,211,238,0.25);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px">';
+  h+='<div style="font-size:22px;flex-shrink:0">\uD83C\uDF10</div>';
+  h+='<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;color:#22d3ee;margin-bottom:2px">Carrier tracking window opened on the left</div>';
+  h+='<div style="font-size:11px;color:var(--t2);line-height:1.4">Look up the ETA in that window, then enter it below and save.</div></div>';
+  h+='<button onclick="reopenCarrierPopupWin()" style="margin-left:6px;background:rgba(34,211,238,0.15);border:1px solid rgba(34,211,238,0.35);color:#22d3ee;padding:7px 11px;border-radius:7px;cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0">\uD83D\uDD04 Reopen</button>';
+  h+='</div>';
+  // 3. Manual ETA / status save form
+  h+=buildManualSavePanel(num,pIdx,mode,cont);
+  // 4. Quick carrier links
+  h+='<div style="margin-top:12px"><div style="font-size:10px;color:var(--t2);margin-bottom:6px;font-weight:600;letter-spacing:.4px">OPEN CARRIER TRACKING DIRECTLY</div>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap">'+buildCarrierLinks(num,mode,cont)+'</div></div>';
+  document.getElementById('dpBody').innerHTML=h;
+  panel.classList.add('open');overlay.classList.add('open');
+  document.body.style.overflow='hidden';
+  // Open carrier tracking page in left-half popup window
+  const sw=screen.availWidth||screen.width;
+  const sh=screen.availHeight||screen.height;
+  const half=Math.floor(sw/2);
+  const url=trkUrl(num,mode);
+  window._cPopUrl=url;window._cPopW=half;window._cPopH=sh;
+  window._cPopRef=window.open(url,'carrierTrackWin',
+    'left=0,top=0,width='+half+',height='+sh+',resizable=yes,scrollbars=yes,toolbar=no,menubar=no,location=yes');
+  // Attempt to move the main browser window to the right half so both are side-by-side
+  // (works when the browser window was not opened by script in Chrome, but silently succeeds in Firefox/Edge and non-maximised windows)
+  try{window.moveTo(half,0);window.resizeTo(half,sh);}catch(e){}
+}
+
+// Re-focus or re-open the carrier tracking popup window
+function reopenCarrierPopupWin(){
+  if(window._cPopRef&&!window._cPopRef.closed){window._cPopRef.focus();}
+  else if(window._cPopUrl){
+    window._cPopRef=window.open(window._cPopUrl,'carrierTrackWin',
+      'left=0,top=0,width='+(window._cPopW||Math.floor(screen.width/2))+',height='+(window._cPopH||screen.height)+',resizable=yes,scrollbars=yes,toolbar=no,menubar=no,location=yes');
+  }
 }
 
 // Build container tracking popup with carrier page iframe + manual save
@@ -1237,6 +1305,11 @@ function handleLoaded(){
     }else{
       r.tval=String(tv); // Normalize the stored format
     }
+    // Normalize FY — fix single-year values like "2025" to proper "YYYY-YYYY" format using invoice date
+    if(r.fy&&!/^\d{4}-\d{4}$/.test(r.fy)){
+      if(r.dt){const[dy,dm]=r.dt.split('-').map(Number);const fs=dm>=4?dy:dy-1;r.fy=fs+'-'+(fs+1)}
+      else{const yn=parseInt(r.fy);if(yn>0)r.fy=(yn-1)+'-'+yn}
+    }
   });
   if(!initialized){loadTrackedETAs();reExtractCachedETAs();populateFilters();setDefaults();initialized=true}
   af();document.getElementById('loader').style.display='none';
@@ -1269,13 +1342,7 @@ function populateFilters(){
 }
 function fillSel(id,s){const el=document.getElementById(id);[...s].filter(Boolean).sort().forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
 function setDefaults(){
-  const now=new Date(),y=now.getFullYear(),m=now.getMonth()+1;
-  // Default: current Financial Year only (Apr-Mar). No month filter.
-  const fyStart=m>=4?y:y-1,currentFY=fyStart+'-'+(fyStart+1);
-  const fyEl=document.getElementById('fFY');
-  for(let i=0;i<fyEl.options.length;i++){if(fyEl.options[i].value===currentFY){fyEl.value=currentFY;break}}
-  // If current FY not found, try previous FY
-  if(!fyEl.value){const prevFY=(fyStart-1)+'-'+fyStart;for(let i=0;i<fyEl.options.length;i++){if(fyEl.options[i].value===prevFY){fyEl.value=prevFY;break}}}
+  // FY default removed — dashboard shows all data by default. User can manually select FY filter.
 }
 function af(){
   const fy=document.getElementById('fFY').value,qtr=document.getElementById('fQtr').value,month=document.getElementById('fMonth').value;
@@ -1538,7 +1605,9 @@ function renderInTransit(){
       const contLine=r.cont?`<div class="k-meta"><span style="color:#f472b6;font-size:8px" title="Container">\u{1F4E6} ${r.cont.length>16?r.cont.substring(0,14)+'..':r.cont}</span></div>`:'';
       const hasCache=ct&&(function(){try{const c=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');return!!(c[ct]&&c[ct].data)}catch(e){return false}})();
       const trkIcon=hasCache?'<div style="font-size:7px;color:#22d3ee;text-align:right;margin-top:1px">\u{1F50D} Click for tracking</div>':'';
-      h+=`<div class="k-card clickable" onclick="showShipmentCard(${ki})" style="cursor:pointer;${lastTrk&&(Date.now()-lastTrk)<14400000?'border-left:2px solid #22d3ee':''}"><div style="display:flex;justify-content:space-between;align-items:start"><span class="k-inv">${r.inv||r.trk||'N/A'}</span><span class="k-badge ${catBadgeCls(r.cat)}">${r.cat||'-'}</span></div><div class="k-meta"><span>${r.mode||'-'}</span><span>${r.vnd?(r.vnd.length>12?r.vnd.substring(0,10)+'..':r.vnd):'-'}</span></div>${contLine}<div class="k-meta"><span style="color:#34d399;font-weight:600">${fcFull(parseVal(r.tval))}</span>${trkSts?'<span style="color:#22d3ee;font-size:9px;font-weight:600">\u{1F4E1} '+trkSts+'</span>':'<span>'+(r.dt||'-')+'</span>'}</div><div class="k-meta"><span>${etaSrc}${effEta||'No ETA'}</span><span class="k-days" style="color:${dlColor}">${dlText}</span></div>${plannedVsApi}${trkLine}${trkIcon}</div>`;
+      const noApiData=!trkSts||(trkSts||'').toLowerCase()==='notfound';
+      const carrierBtn=(r.trk||r.cont)&&noApiData?`<div style="text-align:right;margin-top:2px"><span onclick="event.stopPropagation();openCarrierPopup(${ki})" style="font-size:8px;color:#f59e0b;cursor:pointer;padding:2px 6px;border:1px solid rgba(245,158,11,0.3);border-radius:6px;font-weight:600" title="Open carrier website to check tracking manually">\u{1F310} Carrier Lookup</span></div>`:'';
+      h+=`<div class="k-card clickable" onclick="showShipmentCard(${ki})" style="cursor:pointer;${lastTrk&&(Date.now()-lastTrk)<14400000?'border-left:2px solid #22d3ee':''}"><div style="display:flex;justify-content:space-between;align-items:start"><span class="k-inv">${r.inv||r.trk||'N/A'}</span><span class="k-badge ${catBadgeCls(r.cat)}">${r.cat||'-'}</span></div><div class="k-meta"><span>${r.mode||'-'}</span><span>${r.vnd?(r.vnd.length>12?r.vnd.substring(0,10)+'..':r.vnd):'-'}</span></div>${contLine}<div class="k-meta"><span style="color:#34d399;font-weight:600">${fcFull(parseVal(r.tval))}</span>${trkSts?'<span style="color:#22d3ee;font-size:9px;font-weight:600">\u{1F4E1} '+trkSts+'</span>':'<span>'+(r.dt||'-')+'</span>'}</div><div class="k-meta"><span>${etaSrc}${effEta||'No ETA'}</span><span class="k-days" style="color:${dlColor}">${dlText}</span></div>${plannedVsApi}${trkLine}${trkIcon}${carrierBtn}</div>`;
     });
     h+='</div></div>';
   });
