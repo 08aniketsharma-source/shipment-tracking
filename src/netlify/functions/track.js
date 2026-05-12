@@ -30,11 +30,14 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'No tracking numbers provided' }) };
       }
 
-      // REQUIRED by Parcels API: every shipment MUST have "country" (destination)
-      // The API field name is "country" NOT "destinationCountry"
+      // REQUIRED by Parcels API: "country" (destination) on every shipment.
+      // Default destination = Germany / Düsseldorf 40233 (needed by GLS, DHL, DPD, Hermes, Post-DE).
+      // The "carrier" field (slug) is preserved when caller provides it — prevents Parcels
+      // from defaulting to GLS for everything.
       shipments = shipments.map(s => {
         if (!s.country) s.country = s.destinationCountry || 'DE';
-        delete s.destinationCountry; // API uses "country"
+        delete s.destinationCountry;
+        if (!s.zipCode) s.zipCode = '40233';
         return s;
       });
 

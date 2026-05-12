@@ -15,6 +15,9 @@ body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--
 .sync-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);padding:4px 12px;border-radius:16px;font-size:11px;color:var(--gn);font-weight:600}
 .sync-dot{width:6px;height:6px;border-radius:50%;background:var(--gn);animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes etaGlow{0%,100%{box-shadow:0 2px 8px rgba(245,158,11,.35)}50%{box-shadow:0 2px 14px rgba(251,191,36,.75)}}
+.eta-pulse{animation:etaGlow 1.8s ease-in-out infinite}
+.eta-pulse:hover{animation:none;transform:translateY(-1px)}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .flt{background:var(--c1);border-bottom:1px solid rgba(71,85,105,.5);padding:10px 28px;display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
 .flt select{background:var(--bg);color:var(--tx);border:1px solid var(--c2);padding:6px 10px;border-radius:6px;font-size:11px;cursor:pointer;transition:all .2s;outline:none}
@@ -254,10 +257,11 @@ tr:hover td{background:rgba(59,130,246,.04)}
 <div class="tab-body active" id="t0">
 <div class="sec-title"><span class="dot" style="background:var(--or)"></span> In-Transit Command Center</div>
 <div class="transit-strip" id="transitKpi"></div>
+<div id="pendingDelivBanner" style="display:none;margin-bottom:14px"></div>
 <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
-<button class="btn btn-or btn-sm" onclick="trackAll17('all')">&#x1F50D; Track All</button>
-<button class="btn btn-sm" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff" onclick="trackAll17('air')">&#x2708; Track Air Only</button>
-<button class="btn btn-sm" style="background:linear-gradient(135deg,#06b6d4,#0891b2);color:#fff" onclick="trackAll17('sea')">&#x1F6A2; Track Sea Only</button>
+<button class="btn btn-or btn-sm" onclick="trackAllShipments('all')">&#x1F50D; Track All</button>
+<button class="btn btn-sm" style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff" onclick="trackAllShipments('air')">&#x2708; Track Air Only</button>
+<button class="btn btn-sm" style="background:linear-gradient(135deg,#06b6d4,#0891b2);color:#fff" onclick="trackAllShipments('sea')">&#x1F6A2; Track Sea Only</button>
 <span style="color:var(--t2);font-size:9px;border-left:1px solid var(--bd);padding-left:8px">3h cooldown per shipment</span>
 <span id="trkStatus" style="font-size:11px;color:var(--t2);margin-left:auto"></span></div>
 <div id="etaTimeline" class="kanban"></div>
@@ -433,5 +437,5 @@ tr:hover td{background:rgba(59,130,246,.04)}
 <div class="dp-header"><h2 id="dpTitle"></h2><button class="dp-close" onclick="closeDetailPanel()">&#x2715;</button></div>
 <div class="dp-body" id="dpBody"></div>
 </div>
-<script src="dash_v3.js?v=20260415"></script>
+<script src="dash_v3.js?v=20260415n"></script>
 </body></html>

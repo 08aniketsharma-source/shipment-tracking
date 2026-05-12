@@ -4,3 +4,4 @@
 
 [build]
   publish = "."
+  command = "npm install --prefix .."

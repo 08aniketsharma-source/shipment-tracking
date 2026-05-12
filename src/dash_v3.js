@@ -332,19 +332,72 @@ function toggleCollapse(hdr){
 function makeCollapsible(id,title,content,summaryHtml,startOpen){
   return `<div class="coll-sec"><div class="coll-hdr${startOpen?' open':''}" onclick="toggleCollapse(this)" id="coll_${id}">${title}${summaryHtml?'<div class="coll-summary">'+summaryHtml+'</div>':''}<span class="coll-chev">&#x25BC;</span></div><div class="coll-body${startOpen?' open':''}">${content}</div></div>`;
 }
-function saveTrackedInfo(trk,eta,sts){
+// Purge synthetic "manually saved" entries that were created by accidental clicks.
+// Scans Firebase tracking node directly (not just local cache) so it catches everything.
+// Run from browser console:
+//   purgeBadManualEntries()        -- dry run, lists what would be deleted
+//   purgeBadManualEntries(true)    -- actually deletes from Firebase + localStorage
+window.purgeBadManualEntries=async function(commit){
+  console.log('[purge] scanning Firebase tracking node...');
+  const snap=await fbDB.ref('tracking').once('value');
+  const fbData=snap.val()||{};
+  const bad=[];
+  Object.keys(fbData).forEach(k=>{
+    const entry=fbData[k];if(!entry)return;
+    // Synthetic markers live in entry.trackData (Parcels-format) saved by saveTrackCacheToFirebase
+    const td=entry.trackData;
+    if(td){
+      const states=td.states||(td.track_info?.tracking?.providers?.[0]?.events)||[];
+      const sigText=JSON.stringify(states).toLowerCase();
+      const isManual=sigText.includes('manually saved')||sigText.includes('manual update');
+      if(isManual){
+        const hasRealEvents=states.length>1||states.some(s=>((s.location||'')+'').trim());
+        if(!hasRealEvents){bad.push({key:k,eta:entry.eta,sts:entry.sts,reason:'synthetic-trackData'});return}
+      }
+    }
+    // Fallback heuristic: tracking entry has eta+sts but NO trackData at all
+    // (these are bare manual-saves from saveTrackedInfo without saveTrackCacheToFirebase)
+    if(!td&&entry.eta&&(entry.sts||'').toLowerCase().includes('transit')){
+      bad.push({key:k,eta:entry.eta,sts:entry.sts,reason:'bare-manual'});
+    }
+  });
+  console.log('[purge] found',bad.length,'suspicious entries:');
+  console.table(bad);
+  if(!commit){console.log('Dry run. Call purgeBadManualEntries(true) to delete.');return bad}
+  // Delete from Firebase + localStorage
+  const localCache=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');
+  const localEtas=JSON.parse(localStorage.getItem('TRACKED_ETAS')||'{}');
+  for(const item of bad){
+    const k=item.key;
+    try{await fbDB.ref('tracking/'+k).remove()}catch(e){console.warn('FB remove failed for',k,e.message)}
+    delete localCache[k];delete localEtas[k];
+    delete TRACKED_ETA[k];delete TRACKED_STS[k];delete TRACKED_TS[k];
+  }
+  localStorage.setItem('TRACK_CACHE',JSON.stringify(localCache));
+  localStorage.setItem('TRACKED_ETAS',JSON.stringify(localEtas));
+  console.log('[purge] deleted',bad.length,'entries from Firebase + localStorage. Re-rendering...');
+  if(typeof renderAll==='function')renderAll();
+  return bad;
+};
+function saveTrackedInfo(trk,eta,sts,opts){
   trk=cleanTrk(trk);if(!trk)return;
-  if(eta)TRACKED_ETA[trk]=eta;if(sts)TRACKED_STS[trk]=sts;TRACKED_TS[trk]=Date.now();
-  // Save to localStorage
+  const overwrite=opts&&opts.overwrite;
+  // Normal mode: only set when truthy (preserves previous values).
+  // Overwrite mode: set even when null — used when real API data replaces stale synthetic data.
+  if(eta||overwrite)TRACKED_ETA[trk]=eta||null;
+  if(sts||overwrite)TRACKED_STS[trk]=sts||null;
+  TRACKED_TS[trk]=Date.now();
   try{const d=JSON.parse(localStorage.getItem('TRACKED_ETAS')||'{}');
-    d[trk]={eta:eta||d[trk]?.eta||null,sts:sts||d[trk]?.sts||null,ts:Date.now()};
+    d[trk]={
+      eta:overwrite?(eta||null):(eta||d[trk]?.eta||null),
+      sts:overwrite?(sts||null):(sts||d[trk]?.sts||null),
+      ts:Date.now()
+    };
     localStorage.setItem('TRACKED_ETAS',JSON.stringify(d));
   }catch(e){}
-  // Save to Firebase (shared with all users)
   try{
     const fbKey=trk.replace(/[.#$/\[\]]/g,'_');
-    const fbEntry={eta:eta||null,sts:sts||null,ts:Date.now()};
-    fbDB.ref('tracking/'+fbKey).update(fbEntry);
+    fbDB.ref('tracking/'+fbKey).update({eta:eta||null,sts:sts||null,ts:Date.now()});
   }catch(e){console.warn('Firebase tracking save error:',e)}
 }
 // ============ DELIVERY CONFIRMATION CONTROL ============
@@ -552,6 +605,43 @@ function extractETAFromTracking(info){
           }
         }
       }
+      // 3. LAST-RESORT FALLBACK: any future-dated attribute value is likely an ETA
+      // Many carriers (DPD, GLS, Post-DE, Hermes) return attributes like {l:"Delivery", val:"2026-04-25"}
+      // without the "estimated"/"expected" keyword. If we have a future date, use the earliest.
+      const today=new Date();today.setHours(0,0,0,0);
+      let futureCandidate=null;
+      const consider=(dateStr,src)=>{
+        if(!dateStr)return;
+        const m=(dateStr+'').match(/(\d{4}-\d{2}-\d{2})/);
+        if(!m)return;
+        const d=new Date(m[1]);
+        if(isNaN(d)||d.getFullYear()<=2020)return;
+        // Must be today or in the future (±1 day grace for timezone)
+        if(d.getTime()<today.getTime()-86400000)return;
+        if(!futureCandidate||d<futureCandidate.d){
+          futureCandidate={d,iso:m[1],src};
+        }
+      };
+      if(info.attributes){
+        for(const attr of info.attributes){
+          // Skip labels that clearly indicate a PAST event
+          const lbl=(attr.l||attr.label||attr.name||'').toLowerCase();
+          if(lbl.includes('order')||lbl.includes('pick')||lbl.includes('depart')||lbl.includes('ship'))continue;
+          consider(attr.val||attr.value,'attr:'+lbl);
+        }
+      }
+      if(info.states){
+        for(const st of info.states){
+          const desc=(st.status||'').toLowerCase();
+          // Only consider events that sound forward-looking or generic status updates
+          if(desc.includes('depart')||desc.includes('loaded')||desc.includes('gate out')||desc.includes('picked up')||desc.includes('shipment information'))continue;
+          consider(st.date,'state:'+desc.substring(0,30));
+        }
+      }
+      if(futureCandidate){
+        console.log('extractETA: future-date fallback from',futureCandidate.src,'=',futureCandidate.iso);
+        return futureCandidate.iso;
+      }
       return null;
     }
     // === LEGACY 17Track FORMAT ===
@@ -636,11 +726,21 @@ function isValidDateStr(s){
 }
 function getEffectiveETA(r){
   const t=cleanTrk(r.trk);
-  // Check by tracking/BL number first
-  if(t&&TRACKED_ETA[t]&&isValidDateStr(TRACKED_ETA[t]))return TRACKED_ETA[t];
-  // Also check by container number (for sea freight where trk is BL but tracking saved under container)
-  if(r.cont){const cn=extractContainerNum(r.cont);if(cn&&TRACKED_ETA[cn]&&isValidDateStr(TRACKED_ETA[cn]))return TRACKED_ETA[cn]}
-  // Only return r.eta if it's a valid date string (not "Not Available" etc.)
+  const cn=r.cont?extractContainerNum(r.cont):null;
+  // Collect all candidate ETAs from BL and container — pick the MOST RECENTLY tracked one.
+  // This prevents a stale manual ETA on the BL from overriding a fresh API ETA on the container.
+  const candidates=[];
+  if(t&&TRACKED_ETA[t]&&isValidDateStr(TRACKED_ETA[t])){
+    candidates.push({eta:TRACKED_ETA[t],ts:TRACKED_TS[t]||0,src:'BL'});
+  }
+  if(cn&&TRACKED_ETA[cn]&&isValidDateStr(TRACKED_ETA[cn])){
+    candidates.push({eta:TRACKED_ETA[cn],ts:TRACKED_TS[cn]||0,src:'container'});
+  }
+  if(candidates.length){
+    candidates.sort((a,b)=>b.ts-a.ts);
+    return candidates[0].eta;
+  }
+  // Fall back to the ETA from the source file — only if it's a real date
   return isValidDateStr(r.eta)?r.eta:null;
 }
 function isTrackedETA(r){
@@ -676,21 +776,63 @@ function trkUrl(n,mode){
 const LOC_TO_ORIGIN={'STS China':'CN','STS Thai':'TH','STS Bali':'ID','STS Jewels':'IN',
   'VGL Jaipur':'IN','VGL Mumbai':'IN','Direct UK':'GB','Direct Others':'CN'};
 function getOriginCountry(loc){return LOC_TO_ORIGIN[loc]||null}
-const DEFAULT_DEST_ZIP='40233'; // Default destination postal code (Düsseldorf) for carriers like GLS
+const DEFAULT_DEST_COUNTRY='DE'; // Always Germany (Deutschland)
+const DEFAULT_DEST_ZIP='40233';  // Always Düsseldorf 40233 — required by GLS, DHL, DPD, Hermes, Post-DE
 function isGLS(mode,trk){const m=(mode||'').toLowerCase();const t=(trk||'').toLowerCase();return m.includes('gls')||t.includes('gls')}
+
+// Map shipment mode/vendor → Parcels API carrier slug
+// When set, Parcels API uses THAT carrier (not auto-detect, which often defaults to GLS)
+const CARRIER_SLUG_MAP={
+  // German last-mile
+  gls:'gls',dhl:'dhl',dpd:'dpd',hermes:'hermes','hermes germany':'hermes',
+  'deutsche post':'deutsche-post','post de':'deutsche-post','dhl express':'dhl-express',
+  'dhl ecommerce':'dhl-ecommerce','dhl de':'dhl-de','dhl parcel':'dhl-parcel-de',
+  ups:'ups',fedex:'fedex',tnt:'tnt',
+  // Air-cargo airlines (handled by AWB prefix elsewhere; slug used when mode names them)
+  lufthansa:'lufthansa-cargo','lufthansa cargo':'lufthansa-cargo',
+  emirates:'emirates-skycargo','emirates skycargo':'emirates-skycargo',
+  qatar:'qatar-airways-cargo','qatar cargo':'qatar-airways-cargo',
+  turkish:'turkish-cargo','turkish cargo':'turkish-cargo','iag cargo':'iag-cargo',
+  // Sea carriers (only when explicitly named)
+  maersk:'maersk-line','maersk line':'maersk-line',msc:'msc',
+  hapag:'hapag-lloyd','hapag-lloyd':'hapag-lloyd','hapag lloyd':'hapag-lloyd',
+  cma:'cma-cgm','cma cgm':'cma-cgm','cma-cgm':'cma-cgm',
+  cosco:'cosco',evergreen:'evergreen-line',oocl:'oocl',one:'one-line','one line':'one-line',
+  zim:'zim',hmm:'hmm',hyundai:'hmm','yang ming':'yang-ming',
+  // Forwarders / common names
+  dsv:'dsv',mainfreight:'mainfreight','kuehne nagel':'kuehne-nagel','kuehne+nagel':'kuehne-nagel',
+  dachser:'dachser',schenker:'db-schenker','db schenker':'db-schenker'
+};
+function detectCarrierSlug(mode,vendor,trk){
+  const candidates=[mode,vendor].filter(Boolean).map(s=>String(s).toLowerCase().trim());
+  // 1. Direct match on mode/vendor full string
+  for(const c of candidates){if(CARRIER_SLUG_MAP[c])return CARRIER_SLUG_MAP[c]}
+  // 2. Substring match — pick the longest matching key (more specific wins)
+  const keys=Object.keys(CARRIER_SLUG_MAP).sort((a,b)=>b.length-a.length);
+  for(const c of candidates){for(const k of keys){if(c.includes(k))return CARRIER_SLUG_MAP[k]}}
+  // 3. Tracking-number pattern hints
+  const t=(trk||'').toUpperCase().trim();
+  if(/^1Z[A-Z0-9]{16}$/.test(t))return'ups';
+  if(/^[A-Z]{2}\d{9}DE$/.test(t))return'deutsche-post';
+  // 4. No hint — let Parcels auto-detect
+  return null;
+}
 
 async function apiCallParcels(trackingIds,options){
   options=options||{};
-  const destCountry=options.country||options.destinationCountry||'DE';
+  const destCountry=options.country||options.destinationCountry||DEFAULT_DEST_COUNTRY;
+  const destZip=options.zipCode||DEFAULT_DEST_ZIP;
   const originCountry=options.originCountry||null;
   const shipments=trackingIds.map(id=>{
     const s=typeof id==='string'?{trackingId:id}:Object.assign({},id);
-    // REQUIRED: "country" field — Parcels API rejects without it
-    if(!s.country)s.country=s.destinationCountry||destCountry;
-    delete s.destinationCountry; // API uses "country", not "destinationCountry"
+    // REQUIRED: "country" field — Parcels API rejects without it. ALWAYS Germany.
+    s.country=s.country||s.destinationCountry||destCountry;
+    delete s.destinationCountry;
+    // ALWAYS send Düsseldorf 40233 as destination postal — needed by GLS/DHL/DPD/Hermes/Post-DE
+    if(!s.zipCode)s.zipCode=destZip;
     if(!s.origin&&originCountry)s.origin=originCountry;
-    // GLS and some carriers require postal code for tracking
-    if(!s.zipCode&&options.zipCode)s.zipCode=options.zipCode;
+    // Carrier hint — prevents Parcels from defaulting to GLS for everything
+    if(!s.carrier&&options.carrier)s.carrier=options.carrier;
     return s;
   });
   console.log('Parcels API request:',shipments.length,'shipments, country:',destCountry);
@@ -843,7 +985,11 @@ async function trackOne(num,mode,idx,cont){
   const allTransit=FD.filter(r=>isTrans(r));
   const row=allTransit[idx];
   const originCC=row?getOriginCountry(row.loc):null;
-  const apiOpts=originCC?{originCountry:originCC}:{};
+  const carrierSlug=detectCarrierSlug(mode,row?.vnd,num);
+  const apiOpts={country:DEFAULT_DEST_COUNTRY,zipCode:DEFAULT_DEST_ZIP};
+  if(originCC)apiOpts.originCountry=originCC;
+  if(carrierSlug)apiOpts.carrier=carrierSlug;
+  console.log('Parcels API hint — carrier:',carrierSlug||'(auto)','| dest: DE 40233');
   try{
     const cache=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');
 
@@ -968,12 +1114,11 @@ async function trackOne(num,mode,idx,cont){
       return;
     }
 
-    // ---- STANDARD TRACKING (UPS, FedEx, DHL, etc.) ----
-    // GLS and carriers needing postal code — add zipCode to options
-    const glsOpts=isGLS(mode,num)?Object.assign({},apiOpts,{zipCode:DEFAULT_DEST_ZIP}):apiOpts;
-    console.log('Tracking via Parcels API:',num,'mode:',mode,'origin:',originCC,isGLS(mode,num)?'(GLS w/ zip '+DEFAULT_DEST_ZIP+')':'');
+    // ---- STANDARD TRACKING (UPS, FedEx, DHL, GLS, DPD, etc.) ----
+    // apiOpts already includes carrier hint + DE/40233 destination set in trackOne()
+    console.log('Tracking via Parcels API:',num,'mode:',mode,'origin:',originCC,'carrier:',apiOpts.carrier||'(auto)');
     try{
-      const result=await apiCallParcels([num],glsOpts);
+      const result=await apiCallParcels([num],apiOpts);
       if(result&&result.shipments&&result.shipments.length>0){
         const ship=result.shipments[0];
         if(hasTrackingData(ship)){
@@ -1012,7 +1157,7 @@ function buildManualSavePanel(num,idx,mode,cont){
         '<option value="Exception">Exception</option>'+
         '<option value="Picked Up">Picked Up</option>'+
       '</select>'+
-      '<input type="date" id="awbEta_'+idx+'" value="'+today+'" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(148,163,184,0.3);background:var(--cd);color:var(--tx);font-size:12px;font-weight:600"/>'+
+      '<input type="date" id="awbEta_'+idx+'" placeholder="YYYY-MM-DD" style="padding:6px 10px;border-radius:8px;border:1px solid rgba(148,163,184,0.3);background:var(--cd);color:var(--tx);font-size:12px;font-weight:600"/>'+
       '<button onclick="saveAWBManual(\''+num.replace(/'/g,'')+'\','+idx+',\''+(cont||'').replace(/'/g,'')+'\')" style="padding:6px 16px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:12px;cursor:pointer;white-space:nowrap">\u2705 Save to Dashboard</button>'+
       '<span id="awbSaveMsg_'+idx+'" style="font-size:11px;font-weight:600"></span>'+
     '</div>'+
@@ -1023,8 +1168,12 @@ function buildManualSavePanel(num,idx,mode,cont){
 // Carrier page opens in a left-half popup window; ETA save form stays in the right-side panel
 function openCarrierPopup(idx){
   const r=KANBAN_ITEMS[idx];if(!r)return;
-  const num=r.trk||r.cont||'';if(!num)return;
   const mode=r.mode||'';const cont=r.cont||'';
+  // For sea shipments, ALWAYS open the carrier page with the container number (not the BL/trk field).
+  // BL numbers like "SJAI2602554" look like container codes (4 letters + 7 digits) and mis-route to track-trace.com.
+  const contNum=cont?extractContainerNum(cont):null;
+  const num=(isSea(r)&&contNum)?contNum:(r.trk||contNum||'');
+  if(!num)return;
   const panel=document.getElementById('detailPanel'),overlay=document.getElementById('dpOverlay');
   if(!panel)return;
   document.getElementById('dpTitle').textContent='\uD83D\uDCCB Update ETA \u2014 '+(r.inv||num);
@@ -1143,7 +1292,18 @@ function saveTrackResult(origNum,info,cache){
   const courierETA=extractETAFromTracking(info);
   const courierSts=extractStatusFromTracking(info);
   console.log('saveTrackResult:',origNum,'ETA:',courierETA,'Status:',courierSts);
-  saveTrackedInfo(origNum,courierETA,courierSts);
+  // If the previous entry was a synthetic "manually saved" one, OVERWRITE fully (including clearing stale ETA).
+  // Otherwise keep old ETA when new one is null (API temporarily couldn't extract it).
+  const prevKey=cleanTrk(origNum);
+  const prevCache=cache[prevKey]?cache[prevKey].data:null;
+  const prevStates=prevCache?(prevCache.states||prevCache.track_info?.tracking?.providers?.[0]?.events||[]):[];
+  const prevWasSynthetic=JSON.stringify(prevStates).toLowerCase().match(/manually saved|manual update/);
+  if(prevWasSynthetic||courierETA){
+    // Real API data supersedes synthetic — or we have a new ETA → full overwrite
+    saveTrackedInfo(origNum,courierETA,courierSts,{overwrite:true});
+  }else{
+    saveTrackedInfo(origNum,courierETA,courierSts);
+  }
   saveTrackCacheToFirebase(origNum,info);
 }
 function getAWBVariants(num){
@@ -1161,18 +1321,20 @@ function saveAWBManual(num,idx,cont){
   if(!stsEl||!etaEl)return;
   const sts=stsEl.value;
   const eta=etaEl.value;
-  if(!sts&&!eta){if(msgEl){msgEl.style.color='#f87171';msgEl.textContent='\u26A0 Please select status and/or date'}return}
+  // Both status AND date are required — prevents accidental "In Transit + today" saves
+  if(!sts){if(msgEl){msgEl.style.color='#f87171';msgEl.textContent='\u26A0 Please select a status'}return}
+  if(!eta){if(msgEl){msgEl.style.color='#f87171';msgEl.textContent='\u26A0 Please enter the actual ETA date from the carrier page'}return}
   console.log('saveAWBManual:',num,'cont:',cont,'status:',sts,'eta:',eta);
   // Save to Firebase + localStorage via existing functions — save under BOTH BL and container
-  saveTrackedInfo(num,eta||null,sts||null);
+  saveTrackedInfo(num,eta,sts);
   // Also save under container number if available
-  if(cont){const cn=extractContainerNum(cont);if(cn&&cn!==num)saveTrackedInfo(cn,eta||null,sts||null)}
+  if(cont){const cn=extractContainerNum(cont);if(cn&&cn!==num)saveTrackedInfo(cn,eta,sts)}
   // Create a synthetic Parcels-format object and save to cache
   const syntheticInfo={
     trackingId:num,
-    status:sts||'In Transit',
-    states:[{date:eta?eta+'T00:00:00':'',status:'Status: '+sts+' (manually saved)',location:''}],
-    attributes:eta?[{l:'ETA',val:eta}]:[]
+    status:sts,
+    states:[{date:eta+'T00:00:00',status:'Status: '+sts+' (manually saved)',location:''}],
+    attributes:[{l:'ETA',val:eta}]
   };
   try{
     const cache=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');
@@ -1186,14 +1348,31 @@ function saveAWBManual(num,idx,cont){
   if(initialized)renderAll();
 }
 
-async function trackAll17(filter){
+// Legacy alias — old buttons / cached HTML may still call trackAll17
+window.trackAll17=function(f){return trackAllShipments(f)};
+async function trackAllShipments(filter){
   filter=filter||'all';
   let tr=FD.filter(r=>isTrans(r)&&r.trk);
   if(filter==='air')tr=tr.filter(r=>isAir(r));
   else if(filter==='sea')tr=tr.filter(r=>isSea(r));
   if(!tr.length){document.getElementById('trkStatus').textContent='No '+(filter==='all'?'':filter+' ')+'trackable shipments';return}
   const st=document.getElementById('trkStatus');
-  const stale=tr.filter(r=>{const ct=cleanTrk(r.trk);return!ct||!TRACKED_TS[ct]||(Date.now()-TRACKED_TS[ct])>=TRACK_COOLDOWN});
+  // Also bypass cooldown for rows whose cached data is a synthetic "manually saved" entry —
+  // those need a real API refresh regardless of how recently they were "tracked"
+  const trackCache=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');
+  const isSyntheticCached=(k)=>{
+    const e=trackCache[k];if(!e||!e.data)return false;
+    const states=e.data.states||e.data.track_info?.tracking?.providers?.[0]?.events||[];
+    return JSON.stringify(states).toLowerCase().match(/manually saved|manual update/);
+  };
+  const stale=tr.filter(r=>{
+    const ct=cleanTrk(r.trk);
+    if(!ct||!TRACKED_TS[ct]||(Date.now()-TRACKED_TS[ct])>=TRACK_COOLDOWN)return true;
+    if(isSyntheticCached(ct))return true;
+    const cn=r.cont?extractContainerNum(r.cont):null;
+    if(cn&&isSyntheticCached(cn))return true;
+    return false;
+  });
   const skipped=tr.length-stale.length;
   if(!stale.length){st.innerHTML='<span style="color:var(--gn)">\u2705 All '+tr.length+' '+(filter==='all'?'':filter+' ')+'shipments tracked recently (within 3h).</span>';return}
   st.innerHTML='<span style="color:var(--or)">Starting '+(filter==='all'?'all':filter)+': '+stale.length+' to track'+(skipped?' ('+skipped+' skipped \u2014 tracked <3h ago)':'')+'</span>';
@@ -1219,12 +1398,12 @@ async function trackAll17(filter){
     // Batch track regular numbers via Parcels API
     if(regularNums.length>0){
       try{
-        // Build shipment objects with country (destination) from loc field
+        // Build shipment objects — ALWAYS Germany / 40233, with per-shipment carrier hint
         const ids=regularNums.map(r=>{
-          const obj={trackingId:cleanTrk(r.trk),country:'DE'};
+          const obj={trackingId:cleanTrk(r.trk),country:DEFAULT_DEST_COUNTRY,zipCode:DEFAULT_DEST_ZIP};
           const oc=getOriginCountry(r.loc);if(oc)obj.origin=oc;
-          // GLS requires postal code
-          if(isGLS(r.mode,r.trk))obj.zipCode=DEFAULT_DEST_ZIP;
+          const slug=detectCarrierSlug(r.mode,r.vnd,r.trk);
+          if(slug)obj.carrier=slug;
           return obj;
         });
         const result=await apiCallParcels(ids);
@@ -1311,7 +1490,18 @@ function handleLoaded(){
       else{const yn=parseInt(r.fy);if(yn>0)r.fy=(yn-1)+'-'+yn}
     }
   });
-  if(!initialized){loadTrackedETAs();reExtractCachedETAs();populateFilters();setDefaults();initialized=true}
+  if(!initialized){loadTrackedETAs();reExtractCachedETAs();populateFilters();setDefaults();initialized=true;
+    // One-time auto-cleanup of synthetic "manually saved" entries left by old code.
+    // Runs once per browser (guard flag in localStorage) a few seconds after Firebase loads.
+    if(!localStorage.getItem('synPurgeV1')){
+      setTimeout(async()=>{try{
+        console.log('[auto-purge] scanning for synthetic manual entries…');
+        const res=await purgeBadManualEntries(true);
+        console.log('[auto-purge] removed',res?.length||0,'entries');
+        localStorage.setItem('synPurgeV1','1');
+      }catch(e){console.warn('[auto-purge] failed:',e.message)}},3500);
+    }
+  }
   af();document.getElementById('loader').style.display='none';
 }
 function showEmpty(){
@@ -1602,11 +1792,13 @@ function renderInTransit(){
       const plannedVsApi=(tracked&&r.eta&&effEta!==r.eta)?`<div style="font-size:7px;color:var(--t2);text-align:right">Plan: ${r.eta}</div>`:'';
       const lastTrk=ct?TRACKED_TS[ct]:null;const trkAge=timeAgo(lastTrk);
       const trkLine=r.trk?(lastTrk?`<div style="text-align:right;font-size:8px;margin-top:1px;color:${(Date.now()-lastTrk)<14400000?'#22d3ee':'#f59e0b'}">\u{1F4E1} ${trkAge}</div>`:`<div style="text-align:right;font-size:8px;color:#64748b;margin-top:1px">\u23F3 Not tracked</div>`):'';
-      const contLine=r.cont?`<div class="k-meta"><span style="color:#f472b6;font-size:8px" title="Container">\u{1F4E6} ${r.cont.length>16?r.cont.substring(0,14)+'..':r.cont}</span></div>`:'';
+      const contLine=r.cont?`<div class="k-meta"><span style="color:#f472b6;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="Container">\u{1F4E6} ${r.cont}</span></div>`:'';
       const hasCache=ct&&(function(){try{const c=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');return!!(c[ct]&&c[ct].data)}catch(e){return false}})();
       const trkIcon=hasCache?'<div style="font-size:7px;color:#22d3ee;text-align:right;margin-top:1px">\u{1F50D} Click for tracking</div>':'';
-      const noApiData=!trkSts||(trkSts||'').toLowerCase()==='notfound';
-      const carrierBtn=(r.trk||r.cont)&&noApiData?`<div style="text-align:right;margin-top:2px"><span onclick="event.stopPropagation();openCarrierPopup(${ki})" style="font-size:8px;color:#f59e0b;cursor:pointer;padding:2px 6px;border:1px solid rgba(245,158,11,0.3);border-radius:6px;font-weight:600" title="Open carrier website to check tracking manually">\u{1F310} Carrier Lookup</span></div>`:'';
+      const needsEta=!effEta;
+      const carrierBtn=(r.trk||r.cont)?(needsEta
+        ?`<div style="text-align:right;margin-top:4px"><span onclick="event.stopPropagation();openCarrierPopup(${ki})" class="eta-pulse" style="font-size:9px;color:#fff;cursor:pointer;padding:4px 9px;background:linear-gradient(135deg,#f59e0b,#d97706);border:1px solid #fbbf24;border-radius:7px;font-weight:800;box-shadow:0 2px 8px rgba(245,158,11,.35)" title="No ETA \u2014 open carrier site to look it up & save">\u{1F310} Get ETA \u2192</span></div>`
+        :`<div style="text-align:right;margin-top:2px"><span onclick="event.stopPropagation();openCarrierPopup(${ki})" style="font-size:8px;color:#f59e0b;cursor:pointer;padding:2px 6px;border:1px solid rgba(245,158,11,0.3);border-radius:6px;font-weight:600" title="Open carrier website to check tracking manually">\u{1F310} Carrier Lookup</span></div>`):'';
       h+=`<div class="k-card clickable" onclick="showShipmentCard(${ki})" style="cursor:pointer;${lastTrk&&(Date.now()-lastTrk)<14400000?'border-left:2px solid #22d3ee':''}"><div style="display:flex;justify-content:space-between;align-items:start"><span class="k-inv">${r.inv||r.trk||'N/A'}</span><span class="k-badge ${catBadgeCls(r.cat)}">${r.cat||'-'}</span></div><div class="k-meta"><span>${r.mode||'-'}</span><span>${r.vnd?(r.vnd.length>12?r.vnd.substring(0,10)+'..':r.vnd):'-'}</span></div>${contLine}<div class="k-meta"><span style="color:#34d399;font-weight:600">${fcFull(parseVal(r.tval))}</span>${trkSts?'<span style="color:#22d3ee;font-size:9px;font-weight:600">\u{1F4E1} '+trkSts+'</span>':'<span>'+(r.dt||'-')+'</span>'}</div><div class="k-meta"><span>${etaSrc}${effEta||'No ETA'}</span><span class="k-days" style="color:${dlColor}">${dlText}</span></div>${plannedVsApi}${trkLine}${trkIcon}${carrierBtn}</div>`;
     });
     h+='</div></div>';
@@ -1793,6 +1985,43 @@ function renderInTransit(){
   TRANSIT_ROWS=tr; // Store for toggle filtering
   renderTransitTable(tr);
 
+  // ── TOP ACTION BANNER: Pending Delivery Confirmations ──────────────
+  // Prominently surfaces unconfirmed-delivered shipments at the top of the
+  // in-transit tab so receiving team can confirm receipt with one click.
+  const pendBan=document.getElementById('pendingDelivBanner');
+  if(pendBan){
+    const unconfirmed=deliveredTr.filter(r=>!(r.delivConfirmed||((r.fsts||'').toLowerCase().includes('received'))))
+      .sort((a,b)=>{
+        const ta=cleanTrk(a.trk),tb=cleanTrk(b.trk);
+        return(TRACKED_TS[tb]||0)-(TRACKED_TS[ta]||0);
+      });
+    if(unconfirmed.length>0){
+      const totVal=unconfirmed.reduce((s,r)=>s+parseVal(r.tval),0);
+      let bh=`<div style="background:linear-gradient(135deg,rgba(251,191,36,.10),rgba(245,158,11,.06));border:1px solid rgba(251,191,36,.35);border-left:4px solid #fbbf24;border-radius:10px;padding:14px 16px;box-shadow:0 2px 12px rgba(251,191,36,.08)">`;
+      bh+=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">`;
+      bh+=`<div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">\u{1F514}</span><div><div style="font-size:13px;font-weight:800;color:#fbbf24;text-transform:uppercase;letter-spacing:.4px">Action Required \u2014 Pending Delivery Confirmation</div><div style="font-size:11px;color:var(--t2);margin-top:2px">${unconfirmed.length} shipment${unconfirmed.length>1?'s':''} marked delivered by courier \u00B7 ${fcFull(totVal)} awaiting receipt confirmation</div></div></div>`;
+      bh+=`<button class="btn btn-sm" onclick="this.nextElementSibling&&(this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none')" style="background:transparent;border:1px solid rgba(251,191,36,.4);color:#fbbf24;font-size:10px;padding:4px 10px;cursor:pointer" title="Toggle list">\u{25BC} ${unconfirmed.length}</button>`;
+      bh+=`</div>`;
+      bh+=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px">`;
+      unconfirmed.slice(0,12).forEach(r=>{
+        const ie=(r.inv||'').replace(/'/g,"\\'"),te=(r.trk||'').replace(/'/g,"\\'"),ce=(r.cont||'').replace(/'/g,"\\'");
+        const ct=cleanTrk(r.trk);const lastTrk=ct?TRACKED_TS[ct]:null;
+        const trkTimeStr=lastTrk?fmtTrackTime(lastTrk):'';
+        bh+=`<div style="background:rgba(15,23,42,.55);border:1px solid rgba(251,191,36,.18);border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px">`;
+        bh+=`<div style="min-width:0;flex:1"><div style="font-size:12px;font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.inv||r.trk||'-'}</div><div style="font-size:9px;color:var(--t2);margin-top:2px">${r.mode||'-'} \u00B7 ${(r.vnd||'-').substring(0,18)}${r.cont?' \u00B7 \u{1F4E6} '+(r.cont.length>12?r.cont.substring(0,10)+'..':r.cont):''}</div>${trkTimeStr?'<div style="font-size:8px;color:var(--t2);margin-top:1px">'+trkTimeStr+'</div>':''}</div>`;
+        bh+=`<button class="btn btn-sm" style="font-size:10px;padding:6px 12px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(16,185,129,.3);white-space:nowrap" onclick="confirmDelivery('${te}','${ce}','${ie}')">\u2705 Confirm</button>`;
+        bh+=`</div>`;
+      });
+      if(unconfirmed.length>12)bh+=`<div style="grid-column:1/-1;text-align:center;font-size:10px;color:var(--t2);padding:6px">+${unconfirmed.length-12} more below \u2193</div>`;
+      bh+=`</div></div>`;
+      pendBan.innerHTML=bh;
+      pendBan.style.display='block';
+    }else{
+      pendBan.style.display='none';
+      pendBan.innerHTML='';
+    }
+  }
+
   // Recently Delivered reference section (last 10)
   const dlvRefEl=document.getElementById('deliveredRef');
   const dlvRefTbody=document.getElementById('deliveredRefTbody');
@@ -1966,8 +2195,7 @@ function renderTransitTable(tr){
     // Container column — make it clickable to carrier page if available
     if(r.cont){
       const ctForCol=getContainerTrackUrl(r.cont);
-      const contDisplay=r.cont.length>14?r.cont.substring(0,12)+'..':r.cont;
-      html+=`<td style="font-size:10px" title="${r.cont}"><a href="${ctForCol.url}" target="_blank" style="color:#f472b6;text-decoration:none;font-weight:600">${contDisplay}</a></td>`;
+      html+=`<td style="font-size:10px;white-space:nowrap" title="${r.cont}"><a href="${ctForCol.url}" target="_blank" style="color:#f472b6;text-decoration:none;font-weight:600">${r.cont}</a></td>`;
     }else{
       html+=`<td style="color:#f472b6;font-size:10px">-</td>`;
     }
@@ -2035,8 +2263,8 @@ function renderTransitTable(tr){
     html+=`<tr><td colspan="11"><div id="trkRes${globalIdx}" style="display:none;padding:8px;background:var(--bg);border-radius:6px;font-size:11px;margin:4px 0"></div></td></tr>`;
 
     // Inline manual save row — auto-show in "manual" view, hidden in others
-    const today=new Date().toISOString().substring(0,10);
-    const curEta=effEta||today;
+    // IMPORTANT: do NOT pre-fill ETA with today's date — forces user to enter the real date
+    const curEta=effEta||'';
     const showManualRow=(!hasApi&&TRANSIT_VIEW==='manual');
     html+=`<tr id="manualRow${globalIdx}" style="display:${showManualRow?'':'none'}" class="manual-save-row"><td colspan="11">`;
     html+=`<div style="padding:10px 14px;background:linear-gradient(135deg,rgba(249,115,22,0.05),rgba(59,130,246,0.05));border:1px solid rgba(249,115,22,0.2);border-radius:10px;margin:2px 0">`;
@@ -2055,7 +2283,7 @@ function renderTransitTable(tr){
     }
     html+=`</div>`;
     html+=`<div class="inline-save">`;
-    html+=`<select id="mSts${globalIdx}"><option value="">-- Status --</option><option value="In Transit" selected>In Transit</option><option value="Delivered">Delivered</option><option value="Arrived at Port">Arrived at Port</option><option value="Customs Clearance">Customs Clearance</option><option value="On Vessel">On Vessel</option><option value="Departed Port">Departed Port</option><option value="Out for Delivery">Out for Delivery</option><option value="Info Received">Info Received</option><option value="Exception">Exception</option></select>`;
+    html+=`<select id="mSts${globalIdx}"><option value="">-- Status --</option><option value="In Transit">In Transit</option><option value="Delivered">Delivered</option><option value="Arrived at Port">Arrived at Port</option><option value="Customs Clearance">Customs Clearance</option><option value="On Vessel">On Vessel</option><option value="Departed Port">Departed Port</option><option value="Out for Delivery">Out for Delivery</option><option value="Info Received">Info Received</option><option value="Exception">Exception</option></select>`;
     html+=`<input type="date" id="mEta${globalIdx}" value="${curEta}"/>`;
     html+=`<button onclick="saveInlineManual('${trkEsc||r.inv}',${globalIdx})">\u2705 Save</button>`;
     html+=`<span id="mMsg${globalIdx}" class="save-msg"></span>`;
@@ -2079,15 +2307,17 @@ function saveInlineManual(num,idx){
   const msgEl=document.getElementById('mMsg'+idx);
   if(!stsEl||!etaEl)return;
   const sts=stsEl.value;const eta=etaEl.value;
-  if(!sts&&!eta){if(msgEl){msgEl.style.color='#f87171';msgEl.textContent='\u26A0 Select status and/or date'}return}
+  // Both required — prevents accidental "In Transit + today" saves polluting the dashboard
+  if(!sts){if(msgEl){msgEl.style.color='#f87171';msgEl.textContent='\u26A0 Pick a status'}return}
+  if(!eta){if(msgEl){msgEl.style.color='#f87171';msgEl.textContent='\u26A0 Enter the actual ETA date'}return}
   console.log('saveInlineManual:',num,'status:',sts,'eta:',eta);
-  saveTrackedInfo(num,eta||null,sts||null);
+  saveTrackedInfo(num,eta,sts);
   // Create synthetic tracking data
   const syntheticInfo={track_info:{
-    latest_status:{status:(sts||'InTransit').replace(/\s+/g,'')},
-    latest_event:{time_iso:eta?eta+'T00:00:00':'',description:'Manually updated: '+sts,location:''},
-    time_metrics:eta?{estimated_delivery_date:eta}:undefined,
-    tracking:{providers:[{events:[{time_iso:eta?eta+'T00:00:00':'',description:'Status: '+sts+' (manual update)',location:''}]}]}
+    latest_status:{status:sts.replace(/\s+/g,'')},
+    latest_event:{time_iso:eta+'T00:00:00',description:'Manually updated: '+sts,location:''},
+    time_metrics:{estimated_delivery_date:eta},
+    tracking:{providers:[{events:[{time_iso:eta+'T00:00:00',description:'Status: '+sts+' (manual update)',location:''}]}]}
   }};
   try{
     const cache=JSON.parse(localStorage.getItem('TRACK_CACHE')||'{}');
